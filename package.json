@@ -16,6 +16,7 @@
     "web": "node --env-file-if-exists=.env --env-file-if-exists=.env.local src/server/main.ts",
     "dev:web": "vite --config web/vite.config.ts",
     "build:web": "vite build --config web/vite.config.ts",
+    "lock:public": "node scripts/public-lockfile.ts",
     "verify:neon": "node --env-file-if-exists=.env --env-file-if-exists=.env.local dist/src/verify-neon.js"
   },
   "dependencies": {

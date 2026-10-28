@@ -28,6 +28,12 @@ the dungeon. See [the full plan](./PLAN.md).
 - For the web director: React and Vite, installed as development dependencies
   by `npm install`.
 
+`package-lock.json` names only the public npm registry, so a build machine such
+as Vercel can install from it. npm on a machine with a private mirror still
+downloads through the mirror, but writes the mirror's URLs into the lockfile
+when it adds or updates a package: run `npm run lock:public` afterwards. A test
+fails until you do.
+
 ## Setup with Neon
 
 The app is linked to Neon project `snowy-dream-76584629`, branch `production`,
