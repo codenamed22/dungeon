@@ -1,19 +1,30 @@
 import { randomInt } from "node:crypto";
 import {
+  BAND_DIFFICULTY,
   canonicalJson,
+  difficultyBandSchema,
   EngineError,
   EVENT_FORMAT,
+  MAX_GOALS,
+  rulesOf,
   validateWorld,
   worldStateSchema,
 } from "./model.ts";
 import type {
   AdventureEvent,
+  Character,
   CharacterAction,
   Challenge,
   CheckEffects,
   Command,
+  Ending,
   EventData,
   EventSource,
+  GoalInput,
+  JudgmentInput,
+  NoteInput,
+  RulingInput,
+  Threat,
   WorldState,
 } from "./model.ts";
 
@@ -27,12 +38,39 @@ export interface CommittedEvent {
   perceivers: string[];
 }
 
+type RulingData = Extract<EventData, { type: "ruling" }>;
+/** Actions a character resolves without the DM; an attempt needs a ruling first. */
+export type DirectAction = Exclude<CharacterAction, { type: "attempt" }>;
+
 const NARRATABLE = new Set<EventData["type"]>([
   "character_moved",
+  "travel_halted",
   "item_transferred",
   "check_resolved",
   "time_advanced",
+  "ruling",
 ]);
+
+/** Events nobody perceives: hidden consequences, and the director's out-of-fiction steering. */
+const HIDDEN = new Set<EventData["type"]>(["threat_armed", "threat_disarmed", "steering"]);
+/** Zero-time parts of a check's outcome, which commit before any threat its duration made due. */
+const OUTCOME_PARTS = new Set<EventData["type"]>(["discovery", "threat_armed", "threat_disarmed", "story_ended"]);
+/** What may still happen once the story has ended: words about what already happened. */
+const AFTER_THE_END = new Set<EventData["type"]>(["narration", "retraction"]);
+
+/** Thoughts: a character's notes and goals, never a perception of the world. */
+export const MENTAL_EVENTS: readonly EventData["type"][] = ["belief_noted", "goal_set"];
+/** Events only their actor perceives: thoughts, and private discoveries. */
+export const PRIVATE_EVENTS: readonly EventData["type"][] = [...MENTAL_EVENTS, "discovery"];
+
+/** An earlier event a belief cites, and who perceived it. */
+export interface Evidence {
+  type: EventData["type"];
+  actorId: string | undefined;
+  perceivers: readonly string[];
+}
+export type EvidenceLookup = (sequence: number) => Evidence | undefined;
+type NoteSource = Extract<EventData, { type: "belief_noted" }>["source"];
 
 function invalid(message: string): never {
   throw new EngineError("INVALID_ACTION", message);
@@ -46,9 +84,85 @@ export function quantity(inventory: Record<string, number>, itemId: string): num
   return Object.hasOwn(inventory, itemId) ? inventory[itemId] ?? 0 : 0;
 }
 
-/** Character actions that the DM may narrate; speech and narration are not narratable. */
+/** Events a retcon may withdraw: words only, never a change to the world. */
+const RETRACTABLE = new Set<EventData["type"]>(["narration", "utterance", "introduced"]);
+
+/** Why an event cannot be retconned, or null if it can. Introduced events that changed routes are undone by branching instead. */
+export function retractionProblem(target: AdventureEvent | undefined, alreadyRetracted: boolean): string | null {
+  if (!target) return "No such event";
+  const data = target.data;
+  if (!RETRACTABLE.has(data.type)) return "Only narration, speech, and introduced events can be retconned; branch the world to undo anything else";
+  if (data.type === "introduced" && data.lockedRoutes.length + data.unlockedRoutes.length > 0) {
+    return "This introduced event changed the world; branch the world to undo it";
+  }
+  if (alreadyRetracted) return "That event was already retconned";
+  return null;
+}
+
+/** Actions that the DM may narrate; speech and narration are not narratable. */
 export function isNarratable(type: EventData["type"]): boolean {
   return NARRATABLE.has(type);
+}
+
+export function isMental(type: EventData["type"]): boolean {
+  return MENTAL_EVENTS.includes(type);
+}
+
+export function isPrivate(type: EventData["type"]): boolean {
+  return PRIVATE_EVENTS.includes(type);
+}
+
+export function actorOf(data: EventData): string | undefined {
+  return "actorId" in data ? data.actorId : undefined;
+}
+
+/**
+ * Where a belief comes from, judged only from what it cites. Someone else's
+ * words, the narrator's, or the referee's make it hearsay even beside firsthand
+ * evidence, so a rumor cannot be laundered into an observation. Citing nothing,
+ * or only one's own words, makes it speculation.
+ */
+function noteSource(actorId: string, evidence: readonly number[], lookup: EvidenceLookup): NoteSource | { problem: string } {
+  let firsthand = false;
+  let reported = false;
+  for (const sequence of evidence) {
+    const cited = lookup(sequence);
+    if (!cited?.perceivers.includes(actorId)) return { problem: `${actorId} did not perceive event #${sequence}` };
+    if (isMental(cited.type)) return { problem: `Event #${sequence} is a thought, not evidence` };
+    if (cited.type === "narration" || cited.type === "ruling" || (cited.type === "utterance" && cited.actorId !== actorId)) {
+      reported = true;
+    } else if (cited.type !== "utterance") {
+      firsthand = true;
+    }
+  }
+  return reported ? "reported" : firsthand ? "inferred" : "speculation";
+}
+
+function noteEvent(actor: Character, note: NoteInput, lookup: EvidenceLookup): EventData {
+  const evidence = [...new Set(note.evidence)].sort((a, b) => a - b);
+  const source = noteSource(actor.id, evidence, lookup);
+  if (typeof source !== "string") invalid(source.problem);
+  return {
+    type: "belief_noted",
+    actorId: actor.id,
+    about: note.about,
+    attribute: note.attribute,
+    value: note.value,
+    evidence,
+    confidence: note.confidence,
+    source,
+  };
+}
+
+function goalEvent(actor: Character, goal: GoalInput, sequence: number): EventData {
+  const goals = actor.goals ?? [];
+  if (goal.status === "adopted") {
+    if (goals.length >= MAX_GOALS) invalid(`${actor.id} already has ${MAX_GOALS} goals`);
+    return { type: "goal_set", actorId: actor.id, goalId: `goal-${sequence}`, kind: goal.kind, text: goal.text, status: "adopted" };
+  }
+  const open = goals.find((entry) => entry.id === goal.goalId && entry.status === "adopted");
+  if (!open) invalid(`${goal.goalId} is not one of ${actor.id}'s open goals`);
+  return { type: "goal_set", actorId: actor.id, goalId: open.id, kind: open.kind, text: open.text, status: goal.status };
 }
 
 export function successEffects(challenge: Challenge): CheckEffects {
@@ -60,34 +174,265 @@ export function successEffects(challenge: Challenge): CheckEffects {
 
 const NO_EFFECTS: CheckEffects = { unlockedRoutes: [], grantedItems: [] };
 
-function activeActor(state: WorldState, actorId: string) {
+export function failureEffects(challenge: Challenge): CheckEffects {
+  const lockedRoutes = challenge.onFailure?.lockRoutes;
+  return structuredClone({ ...NO_EFFECTS, ...(lockedRoutes ? { lockedRoutes } : {}) });
+}
+
+/** The armed threat due first, ties going to ID order. */
+export function nextThreat(state: WorldState): Threat | undefined {
+  let next: Threat | undefined;
+  for (const threat of state.threats ?? []) {
+    if (threat.status !== "armed") continue;
+    if (!next || threat.at! < next.at! || (threat.at === next.at && threat.id < next.id)) next = threat;
+  }
+  return next;
+}
+
+/** The threat that fires partway through a task of `seconds` starting now, which stops travel and waiting. */
+function interruption(state: WorldState, seconds: number): Threat | undefined {
+  const next = nextThreat(state);
+  return next && next.at! < state.elapsedSeconds + seconds ? next : undefined;
+}
+
+/** Conscious characters in the given places, or everywhere. */
+function presentAt(state: WorldState, locationIds: readonly string[] | undefined): Character[] {
+  return state.characters.filter((character) => (
+    character.hp > 0 && (locationIds === undefined || locationIds.includes(character.locationId))
+  ));
+}
+
+function threatEvent(state: WorldState, threat: Threat): EventData {
+  const damage = threat.damage ?? 0;
+  return {
+    type: "threat_triggered",
+    threatId: threat.id,
+    at: threat.at!,
+    text: threat.text,
+    ...(threat.locationIds ? { locationIds: [...threat.locationIds] } : {}),
+    damage: damage === 0 ? [] : presentAt(state, threat.locationIds)
+      .map((character) => ({ characterId: character.id, amount: Math.min(character.hp, damage) })),
+    lockedRoutes: structuredClone(threat.lockRoutes ?? []),
+    unlockedRoutes: structuredClone(threat.unlockRoutes ?? []),
+  };
+}
+
+/** Hidden events setting threats in motion or stopping them, as a check's outcome dictates. */
+function consequences(state: WorldState, challenge: Challenge, success: boolean): EventData[] {
+  const threats = state.threats ?? [];
+  const arm = (success ? challenge.onSuccess?.armThreats : challenge.onFailure?.armThreats) ?? [];
+  const disarm = success ? challenge.onSuccess?.disarmThreats ?? [] : [];
+  return [
+    ...threats.filter((threat) => threat.status === "waiting" && arm.includes(threat.id)).map((threat): EventData => ({
+      type: "threat_armed", threatId: threat.id, challengeId: challenge.id, at: state.elapsedSeconds + threat.delaySeconds!,
+    })),
+    ...threats.filter((threat) => (threat.status === "armed" || threat.status === "waiting") && disarm.includes(threat.id))
+      .map((threat): EventData => ({ type: "threat_disarmed", threatId: threat.id, challengeId: challenge.id })),
+  ];
+}
+
+/** The ending an outcome reaches, if any: the first listed. */
+export function endingFor(
+  state: WorldState,
+  trigger: { challengeId: string; success: boolean } | { threatId: string },
+): Ending | undefined {
+  return state.endings?.find(({ when }) => ("threatId" in trigger
+    ? "threatId" in when && when.threatId === trigger.threatId
+    : "challengeId" in when && when.challengeId === trigger.challengeId && (when.outcome === "success") === trigger.success));
+}
+
+export function isNpc(state: WorldState, characterId: string): boolean {
+  return state.characters.find((character) => character.id === characterId)?.npc === true;
+}
+
+/** A conscious actor of the given kind: characters take turns, the DM voices NPCs. */
+function activeActor(state: WorldState, actorId: string, kind: "character" | "npc" = "character"): Character {
   const actor = state.characters.find((character) => character.id === actorId);
   if (!actor) invalid(`Unknown actor: ${actorId}`);
+  if ((actor.npc === true) !== (kind === "npc")) {
+    invalid(kind === "npc" ? `${actor.id} is not an NPC` : `${actor.id} is an NPC, voiced by the DM`);
+  }
   if (actor.hp === 0) invalid(`${actor.id} is incapacitated`);
   return actor;
+}
+
+/** Why the addressee cannot hear the speaker, or null if they can. */
+function addresseeProblem(state: WorldState, speaker: Character, addresseeId: string): string | null {
+  const addressee = state.characters.find((character) => character.id === addresseeId);
+  if (!addressee || addressee.id === speaker.id || addressee.locationId !== speaker.locationId || addressee.hp === 0) {
+    return `${addresseeId} is not here to hear ${speaker.id}`;
+  }
+  return null;
+}
+
+function utterance(state: WorldState, speaker: Character, text: string, addresseeId: string | undefined): EventData {
+  if (addresseeId !== undefined) {
+    const problem = addresseeProblem(state, speaker, addresseeId);
+    if (problem) invalid(problem);
+  }
+  return {
+    type: "utterance",
+    actorId: speaker.id,
+    locationId: speaker.locationId,
+    text,
+    seconds: state.speechSeconds,
+    ...(addresseeId === undefined ? {} : { addresseeId }),
+  };
+}
+
+function resolveMove(state: WorldState, actor: Character, destinationId: string): EventData {
+  const location = state.locations.find((entry) => entry.id === actor.locationId);
+  const route = location?.routes.find((entry) => entry.destinationId === destinationId);
+  if (!route) invalid(`No route from ${actor.locationId} to ${destinationId}`);
+  if (route.locked) invalid(`The way from ${actor.locationId} to ${destinationId} is blocked`);
+  const threat = interruption(state, route.seconds);
+  if (threat) {
+    return {
+      type: "travel_halted",
+      actorId: actor.id,
+      fromId: actor.locationId,
+      destinationId,
+      seconds: threat.at! - state.elapsedSeconds,
+      threatId: threat.id,
+    };
+  }
+  return {
+    type: "character_moved",
+    actorId: actor.id,
+    fromId: actor.locationId,
+    destinationId,
+    seconds: route.seconds,
+  };
+}
+
+const BANDS: readonly string[] = difficultyBandSchema.options;
+
+/** Why a ruling breaks the world's rules, or null if it is valid. Used on commit and on replay. */
+function rulingProblem(state: WorldState, actor: Character, data: RulingData): string | null {
+  const limits = state.rulings;
+  if (!limits) return "This world does not allow open-ended attempts";
+  switch (data.decision) {
+    case "existing": {
+      const challenge = state.challenges.find((entry) => entry.id === data.challengeId);
+      if (data.challenge !== undefined || data.seconds !== undefined) return "A ruling on an existing challenge defines nothing";
+      if (!challenge || challenge.locationId !== actor.locationId) return `There is no challenge ${data.challengeId} here`;
+      return challenge.resolved ? `${challenge.id} is already resolved` : null;
+    }
+    case "new": {
+      const challenge = data.challenge;
+      if (!challenge || data.challengeId !== challenge.id || data.seconds !== undefined) {
+        return "A new check needs exactly one definition";
+      }
+      if (state.challenges.some((entry) => entry.id === challenge.id)) return `Challenge ID ${challenge.id} is taken`;
+      if (
+        challenge.locationId !== actor.locationId || challenge.resolved || challenge.description !== undefined
+        || challenge.requiresItemId !== undefined || challenge.criteria !== undefined || challenge.onSuccess !== undefined
+      ) {
+        return "A ruled check takes place where the actor is, starts unresolved, and has no requirements or effects";
+      }
+      if (!limits.abilities.includes(challenge.ability)) return `Rulings in this world cannot test ${challenge.ability}`;
+      const band = Object.entries(BAND_DIFFICULTY).find(([, difficulty]) => difficulty === challenge.difficulty)?.[0];
+      if (band === undefined || BANDS.indexOf(band) > BANDS.indexOf(limits.maxDifficulty)) {
+        return `Difficulty must be a band up to ${limits.maxDifficulty}`;
+      }
+      if (challenge.failureDamage > limits.maxFailureDamage) {
+        return `Failure damage must be at most ${limits.maxFailureDamage}`;
+      }
+      return challenge.seconds > limits.maxSeconds ? `A ruled check takes at most ${limits.maxSeconds} seconds` : null;
+    }
+    case "automatic":
+      if (data.seconds === undefined || data.challengeId !== undefined || data.challenge !== undefined) {
+        return "An automatic ruling only takes time";
+      }
+      return data.seconds > limits.maxSeconds ? `A ruled action takes at most ${limits.maxSeconds} seconds` : null;
+  }
+}
+
+/** The ruling event for an attempt. A new check's ID derives from the ruling's sequence. */
+function rulingEvent(state: WorldState, actor: Character, intent: string, ruling: RulingInput, sequence: number): RulingData {
+  const base = { type: "ruling" as const, actorId: actor.id, intent, reason: ruling.reason };
+  let data: RulingData;
+  switch (ruling.decision) {
+    case "existing":
+      data = { ...base, decision: "existing", challengeId: ruling.challengeId };
+      break;
+    case "new": {
+      const challengeId = `ruled-${sequence}`;
+      data = {
+        ...base,
+        decision: "new",
+        challengeId,
+        challenge: {
+          id: challengeId,
+          name: ruling.name,
+          locationId: actor.locationId,
+          ability: ruling.ability,
+          difficulty: BAND_DIFFICULTY[ruling.difficulty],
+          seconds: ruling.seconds,
+          failureDamage: ruling.failureDamage,
+          resolved: false,
+        },
+      };
+      break;
+    }
+    case "automatic":
+      data = { ...base, decision: "automatic", seconds: ruling.seconds };
+      break;
+  }
+  const problem = rulingProblem(state, actor, data);
+  if (problem) invalid(problem);
+  return data;
+}
+
+/** Why the engine would refuse this ruling on an actor's attempt, or null if it would accept it. */
+export function checkRuling(state: WorldState, actorId: string, intent: string, ruling: RulingInput): string | null {
+  try {
+    rulingEvent(state, activeActor(state, actorId), intent, ruling, state.revision + 1);
+    return null;
+  } catch (error) {
+    if (error instanceof EngineError) return error.message;
+    throw error;
+  }
+}
+
+/**
+ * The event for a direct action. A check is rolled in a dice world; in a
+ * judgment world the referee's judgment decides it, and is required.
+ */
+/** The challenge the actor means to attempt, if they can attempt it now. */
+function attemptable(state: WorldState, actor: Character, challengeId: string): Challenge {
+  const challenge = state.challenges.find((entry) => entry.id === challengeId);
+  if (!challenge) invalid(`Unknown challenge: ${challengeId}`);
+  if (challenge.locationId !== actor.locationId) invalid("Challenge is not in this location");
+  if (challenge.resolved) invalid("Challenge is already resolved");
+  if (challenge.requiresItemId !== undefined && quantity(actor.inventory, challenge.requiresItemId) === 0) {
+    invalid(`${challenge.id} requires ${challenge.requiresItemId}, which ${actor.id} does not carry`);
+  }
+  return challenge;
+}
+
+/** Why the engine would refuse this actor's attempt at a challenge now, or null; checked before asking a referee to judge it. */
+export function attemptProblem(state: WorldState, actorId: string, challengeId: string): string | null {
+  try {
+    attemptable(state, activeActor(state, actorId), challengeId);
+    return null;
+  } catch (error) {
+    if (error instanceof EngineError) return error.message;
+    throw error;
+  }
 }
 
 export function resolveAction(
   state: WorldState,
   actorId: string,
-  action: CharacterAction,
+  action: DirectAction,
   roll: Roll = d20,
+  judgment?: JudgmentInput,
 ): EventData {
   const actor = activeActor(state, actorId);
   switch (action.type) {
-    case "move": {
-      const location = state.locations.find((entry) => entry.id === actor.locationId);
-      const route = location?.routes.find((entry) => entry.destinationId === action.destinationId);
-      if (!route) invalid(`No route from ${actor.locationId} to ${action.destinationId}`);
-      if (route.locked) invalid(`The way from ${actor.locationId} to ${action.destinationId} is blocked`);
-      return {
-        type: "character_moved",
-        actorId: actor.id,
-        fromId: actor.locationId,
-        destinationId: action.destinationId,
-        seconds: route.seconds,
-      };
-    }
+    case "move":
+      return resolveMove(state, actor, action.destinationId);
     case "transfer_item": {
       const recipient = state.characters.find((entry) => entry.id === action.recipientId);
       if (!recipient || recipient.id === actor.id) invalid("Choose a different, existing recipient");
@@ -107,20 +452,22 @@ export function resolveAction(
       };
     }
     case "attempt_check": {
-      const challenge = state.challenges.find((entry) => entry.id === action.challengeId);
-      if (!challenge) invalid(`Unknown challenge: ${action.challengeId}`);
-      if (challenge.locationId !== actor.locationId) invalid("Challenge is not in this location");
-      if (challenge.resolved) invalid("Challenge is already resolved");
-      if (challenge.requiresItemId !== undefined && quantity(actor.inventory, challenge.requiresItemId) === 0) {
-        invalid(`${challenge.id} requires ${challenge.requiresItemId}, which ${actor.id} does not carry`);
+      const challenge = attemptable(state, actor, action.challengeId);
+      let outcome: { success: boolean; roll?: number; modifier?: number; difficulty?: number; reason?: string };
+      if (rulesOf(state).outcomes === "judgment") {
+        if (!judgment) invalid("In this world the referee judges every attempt, so a check needs a judgment");
+        outcome = { success: judgment.success, reason: judgment.reason };
+      } else {
+        if (judgment) invalid("This world rolls dice for checks, so it takes no judgment");
+        const value = roll();
+        if (!Number.isInteger(value) || value < 1 || value > 20) {
+          throw new Error("The dice source must return an integer from 1 to 20");
+        }
+        const modifier = actor.modifiers[challenge.ability];
+        outcome = { roll: value, modifier, difficulty: challenge.difficulty, success: value + modifier >= challenge.difficulty };
       }
-      const value = roll();
-      if (!Number.isInteger(value) || value < 1 || value > 20) {
-        throw new Error("The dice source must return an integer from 1 to 20");
-      }
-      const modifier = actor.modifiers[challenge.ability];
-      const success = value + modifier >= challenge.difficulty;
-      const effects = success ? successEffects(challenge) : structuredClone(NO_EFFECTS);
+      const success = outcome.success;
+      const effects = success ? successEffects(challenge) : failureEffects(challenge);
       for (const grant of effects.grantedItems) {
         if (!Number.isSafeInteger(quantity(actor.inventory, grant.itemId) + grant.quantity)) {
           invalid("Inventory would overflow");
@@ -130,40 +477,49 @@ export function resolveAction(
         type: "check_resolved",
         actorId: actor.id,
         challengeId: challenge.id,
-        roll: value,
-        modifier,
-        difficulty: challenge.difficulty,
-        success,
+        ...outcome,
+        ...(action.approach === undefined ? {} : { approach: action.approach }),
         damage: success ? 0 : Math.min(actor.hp, challenge.failureDamage),
         seconds: challenge.seconds,
         effects,
       };
     }
-    case "wait":
-      return { type: "time_advanced", actorId: actor.id, seconds: action.seconds };
+    case "wait": {
+      const threat = interruption(state, action.seconds);
+      return threat
+        ? { type: "time_advanced", actorId: actor.id, seconds: threat.at! - state.elapsedSeconds, interruptedBy: threat.id }
+        : { type: "time_advanced", actorId: actor.id, seconds: action.seconds };
+    }
   }
 }
 
 export function eventDuration(data: EventData): number {
-  return "seconds" in data ? data.seconds : 0;
+  return "seconds" in data ? data.seconds ?? 0 : 0;
 }
 
 /**
  * Characters who perceive an event: conscious characters where it happens, plus
  * the actor. A move is seen at both ends. Narration reaches the perceivers of the
- * events it describes, which the caller supplies.
+ * events it describes, and a retraction the perceivers of its target; the caller
+ * supplies that audience.
  */
 export function perceiversOf(
   before: WorldState | undefined,
   data: EventData,
-  narrationAudience?: readonly string[],
+  audience?: readonly string[],
 ): string[] {
-  if (data.type === "world_created") return [];
-  if (data.type === "narration") {
-    if (!narrationAudience) throw new Error("Narration perceivers require the narrated events' audience");
-    return [...new Set(narrationAudience)].sort();
+  if (data.type === "world_created" || HIDDEN.has(data.type)) return [];
+  if (data.type === "narration" || data.type === "retraction") {
+    if (!audience) throw new Error(`${data.type} perceivers require the audience of the events it concerns`);
+    return [...new Set(audience)].sort();
   }
   if (!before) corrupt("Event precedes world creation");
+  if (data.type === "threat_triggered" || data.type === "introduced") {
+    return presentAt(before, data.locationIds).map((character) => character.id).sort();
+  }
+  if (data.type === "story_ended") return presentAt(before, undefined).map((character) => character.id).sort();
+  if (!("actorId" in data)) corrupt(`A ${data.type} event cannot be perceived`);
+  if (isPrivate(data.type)) return [data.actorId];
   const actor = before.characters.find((character) => character.id === data.actorId);
   if (!actor) corrupt(`Event has an unknown actor: ${data.actorId}`);
   const locations = data.type === "character_moved" ? [data.fromId, data.destinationId] : [actor.locationId];
@@ -177,8 +533,18 @@ export function perceiversOf(
 export function resolveCommand(
   state: WorldState,
   command: Command,
-  options: { roll: Roll; recordedAt: string; narrationAudience?: readonly string[] },
+  options: {
+    roll: Roll;
+    recordedAt: string;
+    /** Who perceived the events a narration describes, or the event a retcon withdraws. */
+    audience?: readonly string[];
+    /** The earlier events a note cites; a note may cite only events its writer perceived. */
+    evidence?: EvidenceLookup;
+  },
 ): { committed: CommittedEvent[]; state: WorldState } {
+  if (state.endedWith !== undefined && command.role !== "dm" && !(command.role === "director" && command.action.type === "retcon")) {
+    invalid("The story has ended. Branch the world from before the ending to play on");
+  }
   const committed: CommittedEvent[] = [];
   let current = state;
   const append = (source: EventSource, data: EventData) => {
@@ -192,23 +558,107 @@ export function resolveCommand(
       elapsedSeconds: current.elapsedSeconds + eventDuration(data),
       data,
     };
-    const perceivers = perceiversOf(current, data, options.narrationAudience);
+    const perceivers = perceiversOf(current, data, options.audience);
     current = applyEvent(current, event);
     committed.push({ event, perceivers });
   };
+  const done = () => ({ committed, state: current });
+  const end = (ending: Ending | undefined) => {
+    if (ending) append("engine", { type: "story_ended", endingId: ending.id });
+  };
+  /**
+   * Fires every threat the clock has reached, earliest first, until one ends
+   * the story. A threat interrupts the turn: whatever the actor meant to do
+   * next does not happen.
+   */
+  const fireDue = (): boolean => {
+    let fired = false;
+    for (
+      let threat = nextThreat(current);
+      threat && threat.at! <= current.elapsedSeconds && current.endedWith === undefined;
+      threat = nextThreat(current)
+    ) {
+      append("engine", threatEvent(current, threat));
+      end(endingFor(current, { threatId: threat.id }));
+      fired = true;
+    }
+    return fired;
+  };
+  /**
+   * An action, then its outcome: what a successful check revealed to the actor
+   * alone, its consequences, and the ending it reaches.
+   */
+  const act = (data: EventData) => {
+    append("character", data);
+    if (data.type !== "check_resolved") return;
+    const challenge = current.challenges.find((entry) => entry.id === data.challengeId)!;
+    const reveals = data.success ? challenge.onSuccess?.reveals : undefined;
+    if (reveals !== undefined) {
+      append("character", { type: "discovery", actorId: data.actorId, challengeId: data.challengeId, text: reveals });
+    }
+    for (const consequence of consequences(current, challenge, data.success)) append("engine", consequence);
+    end(endingFor(current, { challengeId: challenge.id, success: data.success }));
+  };
+  if (command.role === "director") {
+    const action = command.action;
+    if (action.type === "steer") {
+      const target = action.targetId;
+      if (target !== undefined && !current.characters.some((character) => character.id === target)) {
+        invalid(`Unknown character: ${target}`);
+      }
+      append("director", { type: "steering", text: action.text, ...(target === undefined ? {} : { targetId: target }) });
+    } else if (action.type === "retcon") {
+      // The caller checks the target with retractionProblem and supplies its perceivers.
+      append("director", { type: "retraction", targetSequence: action.sequence, text: action.text });
+    } else {
+      const problem = introductionProblem(current, action.locationIds, action.lockRoutes ?? [], action.unlockRoutes ?? []);
+      if (problem) invalid(problem);
+      append("director", {
+        type: "introduced",
+        text: action.text,
+        ...(action.locationIds ? { locationIds: [...action.locationIds] } : {}),
+        lockedRoutes: structuredClone(action.lockRoutes ?? []),
+        unlockedRoutes: structuredClone(action.unlockRoutes ?? []),
+      });
+    }
+    return done();
+  }
   if (command.role === "character") {
     const actor = activeActor(current, command.actorId);
     if (command.speech !== undefined) {
-      append("character", {
-        type: "utterance",
-        actorId: actor.id,
-        locationId: actor.locationId,
-        text: command.speech,
-        seconds: current.speechSeconds,
-      });
+      append("character", utterance(current, actor, command.speech, command.addresseeId));
+      if (fireDue()) return done();
     }
-    if (command.action !== undefined) {
-      append("character", resolveAction(current, actor.id, command.action, options.roll));
+    // Thoughts commit before the action, while the actor is sure to be conscious.
+    if (command.note !== undefined) {
+      append("character", noteEvent(actor, command.note, options.evidence ?? (() => undefined)));
+    }
+    if (command.goal !== undefined) {
+      append("character", goalEvent(actor, command.goal, current.revision + 1));
+    }
+    const action = command.action;
+    if (action?.type === "attempt") {
+      if (!command.ruling) invalid("An attempt needs the DM's ruling");
+      // The ruling, and any check it defines, commits before the roll.
+      const ruling = rulingEvent(current, actor, action.intent, command.ruling, current.revision + 1);
+      if (ruling.challengeId === undefined && command.judgment !== undefined) invalid("An automatic success needs no judgment");
+      append("dm", ruling);
+      if (ruling.challengeId !== undefined) {
+        act(resolveAction(current, actor.id, { type: "attempt_check", challengeId: ruling.challengeId }, options.roll, command.judgment));
+      }
+    } else if (action !== undefined) {
+      act(resolveAction(current, actor.id, action, options.roll, command.judgment));
+    }
+    fireDue();
+  } else if (command.role === "npc") {
+    const actor = activeActor(current, command.actorId, "npc");
+    if (command.speech !== undefined) {
+      append("dm", utterance(current, actor, command.speech, command.addresseeId));
+      if (fireDue()) return done();
+    }
+    if (command.destinationId !== undefined) {
+      append("dm", resolveMove(current, actor, command.destinationId));
+      fireDue();
     }
   } else {
     append("dm", {
@@ -217,13 +667,79 @@ export function resolveCommand(
       text: command.action.text,
     });
   }
-  return { committed, state: current };
+  return done();
 }
 
-function storedActor(state: WorldState, actorId: string) {
+/** A stored event's actor: conscious, and an NPC only where NPCs may act. */
+function storedActor(state: WorldState, actorId: string, npcAllowed = false): Character {
   const actor = state.characters.find((entry) => entry.id === actorId);
   if (!actor || actor.hp === 0) corrupt("Event has an invalid or incapacitated actor");
+  if (actor.npc === true && !npcAllowed) corrupt(`NPC ${actor.id} cannot take this action`);
   return actor;
+}
+
+/**
+ * The DM narrates, rules, and voices NPCs; the engine fires and arms threats; the
+ * director steers; characters do everything else.
+ */
+function expectedSource(state: WorldState, data: Exclude<EventData, { type: "world_created" }>): EventSource {
+  switch (data.type) {
+    case "narration":
+    case "ruling":
+      return "dm";
+    case "threat_triggered":
+    case "threat_armed":
+    case "threat_disarmed":
+    case "story_ended":
+      return "engine";
+    case "steering":
+    case "introduced":
+    case "retraction":
+      return "director";
+    case "utterance":
+    case "character_moved":
+    case "travel_halted":
+      return isNpc(state, data.actorId) ? "dm" : "character";
+    default:
+      return "character";
+  }
+}
+
+function storedThreat(state: WorldState, threatId: string): Threat {
+  const threat = state.threats?.find((entry) => entry.id === threatId);
+  if (!threat) corrupt(`Unknown threat: ${threatId}`);
+  return threat;
+}
+
+type RouteRef = { fromId: string; destinationId: string };
+
+/** Why an introduced event cannot happen as described, or null if it can. */
+function introductionProblem(
+  state: WorldState,
+  locationIds: readonly string[] | undefined,
+  locks: readonly RouteRef[],
+  unlocks: readonly RouteRef[],
+): string | null {
+  const unknown = locationIds?.find((locationId) => !state.locations.some((location) => location.id === locationId));
+  if (unknown !== undefined) return `Unknown location: ${unknown}`;
+  const key = (ref: RouteRef) => `${ref.fromId}>${ref.destinationId}`;
+  for (const ref of [...locks, ...unlocks]) {
+    const route = state.locations.find((location) => location.id === ref.fromId)
+      ?.routes.find((entry) => entry.destinationId === ref.destinationId);
+    if (!route) return `No route from ${ref.fromId} to ${ref.destinationId}`;
+  }
+  const keys = [...locks, ...unlocks].map(key);
+  if (new Set(keys).size !== keys.length) return "A route can be blocked or opened only once per event";
+  return null;
+}
+
+function setRoutes(state: WorldState, refs: readonly RouteRef[], locked: boolean): void {
+  for (const ref of refs) {
+    const route = state.locations.find((entry) => entry.id === ref.fromId)
+      ?.routes.find((entry) => entry.destinationId === ref.destinationId);
+    if (!route) corrupt("Event changes an unknown route");
+    route.locked = locked;
+  }
 }
 
 export function applyEvent(previous: WorldState | undefined, event: AdventureEvent): WorldState {
@@ -245,8 +761,14 @@ export function applyEvent(previous: WorldState | undefined, event: AdventureEve
   if (!previous || previous.id !== event.worldId || event.sequence !== previous.revision + 1) {
     corrupt("Event history is out of sequence");
   }
-  const expectedSource = data.type === "narration" ? "dm" : "character";
-  if (event.source !== expectedSource) corrupt(`${data.type} events must come from the ${expectedSource}`);
+  const source = expectedSource(previous, data);
+  if (event.source !== source) corrupt(`This ${data.type} event must come from the ${source}`);
+  if (previous.endedWith !== undefined && !AFTER_THE_END.has(data.type)) corrupt("Nothing happens after the story ends");
+  // Once the story has ended, the clock stops: threats still due never fire.
+  const due = previous.endedWith === undefined ? nextThreat(previous) : undefined;
+  if (due && due.at! <= previous.elapsedSeconds && data.type !== "threat_triggered" && !OUTCOME_PARTS.has(data.type)) {
+    corrupt(`Threat ${due.id} was due and had to fire first`);
+  }
   const state = structuredClone(previous);
   switch (data.type) {
     case "narration": {
@@ -259,20 +781,43 @@ export function applyEvent(previous: WorldState | undefined, event: AdventureEve
       break;
     }
     case "utterance": {
-      const actor = storedActor(state, data.actorId);
+      const actor = storedActor(state, data.actorId, true);
       if (actor.locationId !== data.locationId || data.seconds !== state.speechSeconds) {
         corrupt("Utterance does not match its speaker or the world's speech time");
       }
+      if (data.addresseeId !== undefined && addresseeProblem(state, actor, data.addresseeId) !== null) {
+        corrupt("Utterance is addressed to someone who could not hear it");
+      }
+      break;
+    }
+    case "ruling": {
+      const problem = rulingProblem(state, storedActor(state, data.actorId), data);
+      if (problem) corrupt(`Ruling breaks the world's limits: ${problem}`);
+      if (data.challenge) state.challenges.push(structuredClone(data.challenge));
       break;
     }
     case "character_moved": {
-      const actor = storedActor(state, data.actorId);
+      const actor = storedActor(state, data.actorId, true);
       const location = state.locations.find((entry) => entry.id === actor.locationId);
       const route = location?.routes.find((entry) => entry.destinationId === data.destinationId);
       if (actor.locationId !== data.fromId || !route || route.locked || route.seconds !== data.seconds) {
         corrupt("Movement event does not match an open route");
       }
+      if (interruption(state, data.seconds)) corrupt("Travel cannot pass a threat");
       actor.locationId = data.destinationId;
+      break;
+    }
+    case "travel_halted": {
+      const actor = storedActor(state, data.actorId, true);
+      const location = state.locations.find((entry) => entry.id === actor.locationId);
+      const route = location?.routes.find((entry) => entry.destinationId === data.destinationId);
+      const next = nextThreat(state);
+      if (
+        actor.locationId !== data.fromId || !route || route.locked || data.seconds >= route.seconds
+        || next?.id !== data.threatId || next.at !== state.elapsedSeconds + data.seconds
+      ) {
+        corrupt("Halted travel does not match an open route and the next threat");
+      }
       break;
     }
     case "item_transferred": {
@@ -290,34 +835,127 @@ export function applyEvent(previous: WorldState | undefined, event: AdventureEve
     case "check_resolved": {
       const actor = storedActor(state, data.actorId);
       const challenge = state.challenges.find((entry) => entry.id === data.challengeId);
+      // A judged outcome is recorded with its reason and no dice; a rolled one must add up.
+      const outcomeFits = challenge !== undefined && (rulesOf(state).outcomes === "judgment"
+        ? data.reason !== undefined && data.roll === undefined && data.modifier === undefined && data.difficulty === undefined
+        : data.reason === undefined && data.roll !== undefined && data.difficulty === challenge.difficulty
+          && data.modifier === actor.modifiers[challenge.ability] && data.success === (data.roll + data.modifier >= challenge.difficulty));
       if (
         !challenge || challenge.resolved || challenge.locationId !== actor.locationId
         || (challenge.requiresItemId !== undefined && quantity(actor.inventory, challenge.requiresItemId) === 0)
-        || data.modifier !== actor.modifiers[challenge.ability]
-        || data.difficulty !== challenge.difficulty
+        || !outcomeFits
         || data.seconds !== challenge.seconds
-        || data.success !== (data.roll + data.modifier >= challenge.difficulty)
         || data.damage !== (data.success ? 0 : Math.min(actor.hp, challenge.failureDamage))
-        || canonicalJson(data.effects) !== canonicalJson(data.success ? successEffects(challenge) : NO_EFFECTS)
+        || canonicalJson(data.effects) !== canonicalJson(data.success ? successEffects(challenge) : failureEffects(challenge))
       ) {
         corrupt("Check outcome contradicts the world rules");
       }
       actor.hp -= data.damage;
       challenge.resolved = data.success;
-      for (const ref of data.effects.unlockedRoutes) {
-        const route = state.locations.find((entry) => entry.id === ref.fromId)
-          ?.routes.find((entry) => entry.destinationId === ref.destinationId);
-        if (!route) corrupt("Check unlocks an unknown route");
-        route.locked = false;
-      }
+      setRoutes(state, data.effects.unlockedRoutes, false);
+      setRoutes(state, data.effects.lockedRoutes ?? [], true);
       for (const grant of data.effects.grantedItems) {
         actor.inventory[grant.itemId] = quantity(actor.inventory, grant.itemId) + grant.quantity;
       }
       break;
     }
-    case "time_advanced":
+    case "time_advanced": {
       storedActor(state, data.actorId);
+      const next = nextThreat(state);
+      if (data.interruptedBy === undefined ? interruption(state, data.seconds) !== undefined
+        : next?.id !== data.interruptedBy || next.at !== state.elapsedSeconds + data.seconds) {
+        corrupt("A wait must stop exactly at the next threat, and only there");
+      }
       break;
+    }
+    case "threat_triggered": {
+      const threat = storedThreat(state, data.threatId);
+      if (nextThreat(state)?.id !== threat.id || threat.at! > state.elapsedSeconds
+        || canonicalJson(data) !== canonicalJson(threatEvent(state, threat))) {
+        corrupt("Threat event contradicts the world rules");
+      }
+      for (const { characterId, amount } of data.damage) {
+        state.characters.find((character) => character.id === characterId)!.hp -= amount;
+      }
+      setRoutes(state, data.lockedRoutes, true);
+      setRoutes(state, data.unlockedRoutes, false);
+      threat.status = "fired";
+      break;
+    }
+    case "threat_armed": {
+      const threat = storedThreat(state, data.threatId);
+      if (threat.status !== "waiting" || data.at !== state.elapsedSeconds + threat.delaySeconds!) {
+        corrupt("Only a waiting threat can be armed, for its delay");
+      }
+      threat.status = "armed";
+      threat.at = data.at;
+      break;
+    }
+    case "threat_disarmed": {
+      const threat = storedThreat(state, data.threatId);
+      if (threat.status !== "armed" && threat.status !== "waiting") corrupt("Only a pending threat can be disarmed");
+      threat.status = "disarmed";
+      break;
+    }
+    case "story_ended": {
+      const ending = state.endings?.find((entry) => entry.id === data.endingId);
+      if (!ending) corrupt(`Unknown ending: ${data.endingId}`);
+      const { when } = ending;
+      if ("threatId" in when && state.threats?.find((threat) => threat.id === when.threatId)?.status !== "fired") {
+        corrupt("An ending on a threat comes only once the threat has happened");
+      }
+      state.endedWith = ending.id;
+      break;
+    }
+    case "steering":
+      if (data.targetId !== undefined && !state.characters.some((character) => character.id === data.targetId)) {
+        corrupt("Steering targets an unknown character");
+      }
+      break;
+    case "retraction":
+      if (data.targetSequence < 2 || data.targetSequence >= event.sequence) corrupt("A retcon must withdraw an earlier event");
+      break;
+    case "introduced": {
+      const problem = introductionProblem(state, data.locationIds, data.lockedRoutes, data.unlockedRoutes);
+      if (problem) corrupt(`Introduced event is impossible: ${problem}`);
+      setRoutes(state, data.lockedRoutes, true);
+      setRoutes(state, data.unlockedRoutes, false);
+      break;
+    }
+    case "discovery": {
+      storedActor(state, data.actorId);
+      const challenge = state.challenges.find((entry) => entry.id === data.challengeId);
+      if (!challenge?.resolved || challenge.onSuccess?.reveals !== data.text) {
+        corrupt("Discovery does not match a solved challenge");
+      }
+      break;
+    }
+    case "belief_noted": {
+      storedActor(state, data.actorId);
+      const evidence = data.evidence;
+      if (evidence.some((sequence, index) => (
+        sequence < 2 || sequence >= event.sequence || (index > 0 && sequence <= evidence[index - 1]!)
+      ))) {
+        corrupt("A belief must cite earlier events in ascending order");
+      }
+      if (evidence.length === 0 && data.source !== "speculation") corrupt("A belief without evidence is speculation");
+      break;
+    }
+    case "goal_set": {
+      const actor = storedActor(state, data.actorId);
+      const goals = actor.goals ?? [];
+      if (data.status === "adopted") {
+        if (data.goalId !== `goal-${event.sequence}`) corrupt("A new goal's ID must come from its event");
+        actor.goals = [...goals, { id: data.goalId, kind: data.kind, text: data.text, status: "adopted" }];
+      } else {
+        const goal = goals.find((entry) => entry.id === data.goalId);
+        if (goal?.status !== "adopted" || goal.kind !== data.kind || goal.text !== data.text) {
+          corrupt("Goal update does not match an open goal");
+        }
+        goal.status = data.status;
+      }
+      break;
+    }
   }
   const elapsedSeconds = state.elapsedSeconds + eventDuration(data);
   if (!Number.isSafeInteger(elapsedSeconds) || event.elapsedSeconds !== elapsedSeconds) {
@@ -334,21 +972,74 @@ export function applyEvent(previous: WorldState | undefined, event: AdventureEve
 /** Rebuilds state and perceivers from an ordered event history, validating every step. */
 export class Replayer {
   state: WorldState | undefined;
-  private readonly history = new Map<number, { type: EventData["type"]; perceivers: string[] }>();
+  private readonly history = new Map<number, { event: AdventureEvent; perceivers: string[] }>();
+  private lastCheck: AdventureEvent | undefined;
+  private readonly retracted = new Set<number>();
 
   apply(event: AdventureEvent): string[] {
+    const data = event.data;
     let audience: string[] | undefined;
-    if (event.data.type === "narration") {
+    if (data.type === "narration") {
       audience = [];
-      for (const sequence of event.data.aboutSequences) {
+      for (const sequence of data.aboutSequences) {
         const target = this.history.get(sequence);
-        if (!target || !isNarratable(target.type)) corrupt("Narration references an event that cannot be narrated");
+        if (!target || !isNarratable(target.event.data.type)) corrupt("Narration references an event that cannot be narrated");
         audience.push(...target.perceivers);
       }
     }
-    const perceivers = perceiversOf(this.state, event.data, audience);
+    if (data.type === "retraction") {
+      const target = this.history.get(data.targetSequence);
+      const problem = retractionProblem(target?.event, this.retracted.has(data.targetSequence));
+      if (problem) corrupt(`Invalid retcon: ${problem}`);
+      audience = target!.perceivers;
+    }
+    if (data.type === "discovery") {
+      const check = this.history.get(event.sequence - 1)?.event;
+      if (
+        check?.requestId !== event.requestId || check.data.type !== "check_resolved" || !check.data.success
+        || check.data.actorId !== data.actorId || check.data.challengeId !== data.challengeId
+      ) {
+        corrupt("A discovery must follow its finder's successful check");
+      }
+    }
+    if (data.type === "belief_noted" && noteSource(data.actorId, data.evidence, (sequence) => this.evidence(sequence)) !== data.source) {
+      corrupt("A belief's source does not match what its holder perceived");
+    }
+    if (data.type === "threat_armed" || data.type === "threat_disarmed") {
+      const check = this.lastCheck;
+      const challenge = this.state?.challenges.find((entry) => entry.id === data.challengeId);
+      const success = check?.data.type === "check_resolved" && check.data.success;
+      const listed = data.type === "threat_disarmed"
+        ? (success ? challenge?.onSuccess?.disarmThreats : undefined)
+        : (success ? challenge?.onSuccess?.armThreats : challenge?.onFailure?.armThreats);
+      if (
+        check?.requestId !== event.requestId || check.data.type !== "check_resolved"
+        || check.data.challengeId !== data.challengeId || !listed?.includes(data.threatId)
+      ) {
+        corrupt("A consequence must follow the check that caused it");
+      }
+    }
+    if (data.type === "story_ended") {
+      const when = this.state?.endings?.find((entry) => entry.id === data.endingId)?.when;
+      const previous = this.history.get(event.sequence - 1)?.event;
+      const check = this.lastCheck;
+      const caused = when !== undefined && ("threatId" in when
+        ? previous?.requestId === event.requestId && previous.data.type === "threat_triggered" && previous.data.threatId === when.threatId
+        : check?.requestId === event.requestId && check.data.type === "check_resolved"
+          && check.data.challengeId === when.challengeId && check.data.success === (when.outcome === "success"));
+      if (!caused) corrupt("An ending must follow the outcome that reaches it");
+    }
+    if (data.type === "check_resolved") this.lastCheck = event;
+    const perceivers = perceiversOf(this.state, data, audience);
     this.state = applyEvent(this.state, event);
-    this.history.set(event.sequence, { type: event.data.type, perceivers });
+    this.history.set(event.sequence, { event, perceivers });
+    if (data.type === "retraction") this.retracted.add(data.targetSequence);
     return perceivers;
+  }
+
+  /** A replayed event as a belief may cite it. */
+  evidence(sequence: number): Evidence | undefined {
+    const entry = this.history.get(sequence);
+    return entry && { type: entry.event.data.type, actorId: actorOf(entry.event.data), perceivers: entry.perceivers };
   }
 }

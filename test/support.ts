@@ -1,7 +1,8 @@
+import assert from "node:assert/strict";
 import { commandSchema, EngineError, EVENT_FORMAT, parseInput } from "../src/model.ts";
 import type { AdventureEvent, EventData, WorldSeed, WorldState } from "../src/model.ts";
-import { applyEvent, resolveCommand } from "../src/rules.ts";
-import type { Roll } from "../src/rules.ts";
+import { applyEvent, Replayer, resolveCommand } from "../src/rules.ts";
+import type { CommittedEvent, Roll } from "../src/rules.ts";
 
 export const NOW = "2026-10-28T12:00:00.000Z";
 
@@ -32,12 +33,49 @@ export function commitTurn(state: WorldState, input: Record<string, unknown>, ro
   return resolveCommand(state, command, { roll, recordedAt: NOW });
 }
 
+/** Resolves commands without storage, citing evidence from a replay that must agree with every commit. */
+export class Session {
+  readonly replayer = new Replayer();
+  readonly events: AdventureEvent[] = [];
+  readonly perceivers = new Map<number, string[]>();
+
+  constructor(seed: WorldSeed) {
+    this.replayer.apply(creationEvent(seed));
+  }
+
+  get state(): WorldState {
+    return this.replayer.state!;
+  }
+
+  /** A character turn by Mira unless `input` says otherwise; `role: "npc"` voices an NPC, `role: "director"` steers. */
+  commit(input: Record<string, unknown>, roll: Roll = fixed(15)): CommittedEvent[] {
+    const actor = input.role === "director" ? {} : { actorId: "mira" };
+    const command = parseInput(commandSchema, {
+      role: "character", requestId: `r${this.state.revision}`, expectedRevision: this.state.revision, ...actor, ...input,
+    });
+    const result = resolveCommand(this.state, command, {
+      roll, recordedAt: NOW, evidence: (sequence) => this.replayer.evidence(sequence),
+    });
+    for (const { event, perceivers } of result.committed) {
+      assert.deepEqual(this.replayer.apply(event), perceivers, "replay agrees with resolution");
+      this.events.push(event);
+      this.perceivers.set(event.sequence, perceivers);
+    }
+    assert.deepEqual(this.state, result.state);
+    return result.committed;
+  }
+
+  perceivedBy(characterId: string): AdventureEvent[] {
+    return this.events.filter((event) => this.perceivers.get(event.sequence)?.includes(characterId));
+  }
+}
+
 /** A hand-built next event, for testing what replay accepts. */
 export function nextEvent(state: WorldState, data: EventData, overrides: Partial<AdventureEvent> = {}): AdventureEvent {
   return {
     v: EVENT_FORMAT, worldId: state.id, sequence: state.revision + 1, requestId: "forged",
     source: data.type === "narration" ? "dm" : "character", recordedAt: NOW,
-    elapsedSeconds: state.elapsedSeconds + ("seconds" in data ? data.seconds : 0),
+    elapsedSeconds: state.elapsedSeconds + ("seconds" in data ? data.seconds ?? 0 : 0),
     data, ...overrides,
   };
 }

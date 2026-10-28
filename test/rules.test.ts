@@ -256,7 +256,7 @@ test("replay reproduces commit-time perceivers, and narration reaches only its a
   const narration = resolveCommand(state, parseInput(commandSchema, {
     role: "dm", requestId: "n5-5", expectedRevision: state.revision,
     action: { type: "narrate", aboutSequences: [5], text: "Elowen watches the clouds." },
-  }), { roll: fixed(10), recordedAt: NOW, narrationAudience: ["mira", "elowen", "mira"] });
+  }), { roll: fixed(10), recordedAt: NOW, audience: ["mira", "elowen", "mira"] });
   committed.push(...narration.committed);
   assert.deepEqual(committed.map(({ event, perceivers }) => [event.sequence, event.data.type, perceivers]), [
     [2, "utterance", ["bram", "mira"]],

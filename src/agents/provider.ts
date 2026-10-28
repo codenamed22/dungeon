@@ -9,11 +9,15 @@ export interface ModelRequest {
   /** Structured output the reply must match; the runner validates it again. */
   schema: z.ZodType;
   schemaName: string;
+  /** Aborting it cancels the call, which then fails with "cancelled". */
+  signal?: AbortSignal | undefined;
 }
 
 export interface ModelUsage {
   inputTokens: number;
   outputTokens: number;
+  /** What the call cost, in the provider's billing unit, when the provider reports it. */
+  cost?: number | undefined;
 }
 
 export interface ModelResponse {
@@ -33,6 +37,7 @@ export type ProviderFailure =
   | "truncated"
   | "invalid_output"
   | "api_error"
+  | "cancelled"
   | "script_exhausted";
 
 /** An expected provider failure; the turn that hit it is recorded as failed. */
@@ -65,10 +70,11 @@ export interface ModelProvider {
 }
 
 /** A scripted reply, or a function computing one from the request. */
+/** A scripted reply. Usage defaults to a token estimate, with no cost. */
 export type ScriptStep =
-  | { role: AgentRole; output: unknown }
+  | { role: AgentRole; output: unknown; usage?: ModelUsage }
   | { role: AgentRole; error: ProviderError }
-  | { role: AgentRole; respond: (request: ModelRequest) => unknown | Promise<unknown> };
+  | { role: AgentRole; respond: (request: ModelRequest) => unknown | Promise<unknown>; usage?: ModelUsage };
 
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
@@ -96,6 +102,7 @@ export class ScriptedProvider implements ModelProvider {
   }
 
   async generate(request: ModelRequest): Promise<ModelResponse> {
+    if (request.signal?.aborted) throw new ProviderError("cancelled", "The call was cancelled");
     this.requests.push(request);
     const step = this.steps.shift();
     if (!step) throw new ProviderError("script_exhausted", `No scripted reply left for the ${request.role}`);
@@ -108,7 +115,7 @@ export class ScriptedProvider implements ModelProvider {
       output,
       raw: output,
       model: "scripted",
-      usage: {
+      usage: step.usage ?? {
         inputTokens: estimateTokens(request.system + request.prompt),
         outputTokens: estimateTokens(JSON.stringify(output) ?? ""),
       },

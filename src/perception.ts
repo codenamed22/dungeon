@@ -1,15 +1,18 @@
-import { EngineError, MAX_WAIT_SECONDS } from "./model.ts";
-import type { Ability, Character, WorldState } from "./model.ts";
+import { EngineError, MAX_WAIT_SECONDS, rulesOf } from "./model.ts";
+import type { Ability, Character, DifficultyBand, WorldRules, WorldState } from "./model.ts";
 import { quantity } from "./rules.ts";
 
+export type { DifficultyBand } from "./model.ts";
 export type Condition = "unhurt" | "wounded" | "badly wounded" | "incapacitated";
-export type DifficultyBand = "easy" | "moderate" | "hard" | "very hard";
 
 /**
  * Everything one character can currently perceive. Other characters appear only
- * by name and visible condition; difficulty appears only as a band.
+ * by name and visible condition; difficulty appears only as a band. A
+ * challenge's criteria never appear: only the referee reads them.
  */
 export interface Perception {
+  /** The world's rules, which say what to call stats and health, and whether to show them. */
+  rules: WorldRules;
   characterId: string;
   name: string;
   hp: number;
@@ -38,6 +41,8 @@ export interface AvailableActions {
   move: string[];
   transfer: { recipients: string[]; items: { id: string; quantity: number }[] };
   attempt: string[];
+  /** Whether open-ended attempts are allowed, for the referee to rule on. */
+  intent: boolean;
   maxWaitMinutes: number;
 }
 
@@ -68,6 +73,7 @@ export function perceive(state: WorldState, characterId: string): Perception {
   const self = character(state, characterId);
   const location = state.locations.find((entry) => entry.id === self.locationId)!;
   return {
+    rules: rulesOf(state),
     characterId: self.id,
     name: self.name,
     hp: self.hp,
@@ -109,10 +115,12 @@ export function perceive(state: WorldState, characterId: string): Perception {
   };
 }
 
-/** Targets the engine would currently accept; an incapacitated character has none. */
+/** Targets the engine would currently accept; an incapacitated character has none, and nobody has any once the story ends. */
 export function availableActions(state: WorldState, characterId: string): AvailableActions {
   const self = character(state, characterId);
-  if (self.hp === 0) return { move: [], transfer: { recipients: [], items: [] }, attempt: [], maxWaitMinutes: 0 };
+  if (self.hp === 0 || state.endedWith !== undefined) {
+    return { move: [], transfer: { recipients: [], items: [] }, attempt: [], intent: false, maxWaitMinutes: 0 };
+  }
   const location = state.locations.find((entry) => entry.id === self.locationId)!;
   return {
     move: location.routes.filter((route) => !route.locked).map((route) => route.destinationId),
@@ -128,6 +136,7 @@ export function availableActions(state: WorldState, characterId: string): Availa
         && (challenge.requiresItemId === undefined || quantity(self.inventory, challenge.requiresItemId) > 0)
       ))
       .map((challenge) => challenge.id),
+    intent: state.rulings !== undefined,
     maxWaitMinutes: MAX_WAIT_SECONDS / 60,
   };
 }

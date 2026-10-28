@@ -3,9 +3,9 @@ import test from "node:test";
 import { starterWorld } from "../src/adventures/starter.ts";
 import type { WorldState } from "../src/model.ts";
 import { availableActions, conditionOf, difficultyBand, perceive } from "../src/perception.ts";
-import { resolveAction } from "../src/rules.ts";
+import { resolveAction, resolveCommand } from "../src/rules.ts";
 import { sampleWorld } from "../src/sample-world.ts";
-import { commitTurn, errorCode, fixed, initialState } from "./support.ts";
+import { commitTurn, errorCode, fixed, initialState, NOW } from "./support.ts";
 
 test("perception shows difficulty bands and others' condition, never numbers or inventories", () => {
   const state = initialState(sampleWorld("perception"));
@@ -41,14 +41,14 @@ test("locked exits and unmet requirements are visible but not available", () => 
   ]);
   assert.deepEqual(view.challenges[0]?.requires, { id: "crowbar", name: "Crowbar", carried: false });
   assert.deepEqual(availableActions(state, "elowen"), {
-    move: ["camp"], transfer: { recipients: [], items: [{ id: "lantern", quantity: 1 }] }, attempt: [], maxWaitMinutes: 60,
+    move: ["camp"], transfer: { recipients: [], items: [{ id: "lantern", quantity: 1 }] }, attempt: [], intent: true, maxWaitMinutes: 60,
   });
   const withBram = commitTurn(state, { actorId: "bram", action: { type: "move", destinationId: "mouth" } }).state;
   assert.deepEqual(availableActions(withBram, "bram").attempt, ["pry-bars"]);
   assert.deepEqual(availableActions(withBram, "bram").transfer.recipients, ["elowen"]);
   withBram.characters.find((character) => character.id === "bram")!.hp = 0;
   assert.deepEqual(availableActions(withBram, "bram"), {
-    move: [], transfer: { recipients: [], items: [] }, attempt: [], maxWaitMinutes: 0,
+    move: [], transfer: { recipients: [], items: [] }, attempt: [], intent: false, maxWaitMinutes: 0,
   });
 });
 
@@ -64,7 +64,15 @@ test("every available action is one the engine accepts", () => {
     states.push(state);
   }
   for (const current of states) {
-    for (const character of current.characters) {
+    for (const npc of current.characters.filter((character) => character.npc)) {
+      // NPCs act through the DM's npc commands, along the same open exits.
+      for (const exit of perceive(current, npc.id).exits.filter((entry) => !entry.blocked)) {
+        resolveCommand(current, {
+          role: "npc", requestId: "npc", expectedRevision: current.revision, actorId: npc.id, destinationId: exit.id,
+        }, { roll: fixed(10), recordedAt: NOW });
+      }
+    }
+    for (const character of current.characters.filter((entry) => !entry.npc)) {
       const actions = availableActions(current, character.id);
       for (const destinationId of actions.move) resolveAction(current, character.id, { type: "move", destinationId });
       for (const challengeId of actions.attempt) {

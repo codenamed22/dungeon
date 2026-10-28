@@ -1,52 +1,67 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { starterCast, starterWorld } from "../src/adventures/starter.ts";
-import { describeEvent, formatClock, renderCharacterPrompt } from "../src/agents/context.ts";
-import { characterSystemPrompt } from "../src/agents/prompts.ts";
-import { characterTurnSchema, ProposalError, toTurnParts } from "../src/agents/protocol.ts";
+import {
+  describeEvent, formatClock, renderCharacterPrompt, renderNpcPrompt, renderRulingPrompt,
+} from "../src/agents/context.ts";
+import {
+  characterSystemPrompt, judgeSystemPrompt, narratorSystemPrompt, npcSystemPrompt, refereeSystemPrompt,
+} from "../src/agents/prompts.ts";
+import {
+  characterTurnSchema, ProposalError, rulingSchema, toNpcParts, toRuling, toTurnParts,
+} from "../src/agents/protocol.ts";
 import { ProviderError, ScriptedProvider } from "../src/agents/provider.ts";
 import { availableActions, perceive } from "../src/perception.ts";
 import { sampleWorld } from "../src/sample-world.ts";
 import { commitTurn, fixed, initialState } from "./support.ts";
 
 const none = {
-  destinationId: null, recipientId: null, itemId: null, quantity: null, challengeId: null, minutes: null,
+  destinationId: null, recipientId: null, itemId: null, quantity: null, challengeId: null, intent: null, minutes: null,
 };
 
 test("model output converts to engine commands with per-action checks", () => {
-  assert.deepEqual(toTurnParts({ speech: "  Hello.  ", action: null }), { speech: "Hello." });
-  assert.deepEqual(toTurnParts({ speech: null, action: { ...none, type: "move", destinationId: "ridge" } }), {
+  assert.deepEqual(toTurnParts({ to: null, speech: "  Hello.  ", action: null }), { speech: "Hello." });
+  assert.deepEqual(toTurnParts({ to: null, speech: null, action: { ...none, type: "move", destinationId: "ridge" } }), {
     action: { type: "move", destinationId: "ridge" },
   });
-  assert.deepEqual(toTurnParts({ speech: "", action: { ...none, type: "wait", minutes: 5 } }), {
+  assert.deepEqual(toTurnParts({ to: null, speech: "", action: { ...none, type: "wait", minutes: 5 } }), {
     action: { type: "wait", seconds: 300 },
   });
   assert.deepEqual(toTurnParts({
+    to: null,
     speech: "Take it.",
     action: { ...none, type: "transfer_item", recipientId: "bram", itemId: "rope", quantity: 1 },
   }), {
     speech: "Take it.", action: { type: "transfer_item", recipientId: "bram", itemId: "rope", quantity: 1 },
   });
+  // An addressee needs speech to address; an attempt carries its trimmed intent.
+  assert.deepEqual(toTurnParts({ to: " bram ", speech: "Here.", action: null }), { speech: "Here.", addresseeId: "bram" });
+  assert.deepEqual(toTurnParts({ to: "bram", speech: null, action: { ...none, type: "attempt", intent: " climb the arch " } }), {
+    action: { type: "attempt", intent: "climb the arch" },
+  });
   for (const [output, message] of [
-    [{ speech: "   ", action: null }, /Say something/],
-    [{ speech: "x".repeat(501), action: null }, /at most 500/],
-    [{ speech: null, action: { ...none, type: "move" } }, /move requires destinationId/],
-    [{ speech: null, action: { ...none, type: "transfer_item", recipientId: "bram", itemId: "rope" } }, /requires quantity/],
-    [{ speech: null, action: { ...none, type: "wait", minutes: 0 } }, /between 1 and 60/],
-    [{ speech: null, action: { ...none, type: "wait", minutes: 61 } }, /between 1 and 60/],
+    [{ to: null, speech: "   ", action: null }, /Say something/],
+    [{ to: null, speech: "x".repeat(501), action: null }, /at most 500/],
+    [{ to: null, speech: null, action: { ...none, type: "move" } }, /move requires destinationId/],
+    [{ to: null, speech: null, action: { ...none, type: "transfer_item", recipientId: "bram", itemId: "rope" } }, /requires quantity/],
+    [{ to: null, speech: null, action: { ...none, type: "wait", minutes: 0 } }, /between 1 and 60/],
+    [{ to: null, speech: null, action: { ...none, type: "wait", minutes: 61 } }, /between 1 and 60/],
+    [{ to: null, speech: null, action: { ...none, type: "attempt" } }, /attempt requires intent/],
+    [{ to: null, speech: null, action: { ...none, type: "attempt", intent: "  " } }, /intent must not be empty/],
+    [{ to: null, speech: null, action: { ...none, type: "attempt", intent: "x".repeat(201) } }, /at most 200/],
   ] as const) {
     assert.throws(() => toTurnParts(output), (error) => error instanceof ProposalError && message.test(error.message));
   }
 });
 
 test("the turn schema is strict about fields", () => {
-  assert.ok(characterTurnSchema.safeParse({ speech: null, action: { ...none, type: "wait", minutes: 1 } }).success);
+  assert.ok(characterTurnSchema.safeParse({ to: null, speech: null, action: { ...none, type: "wait", minutes: 1 } }).success);
   for (const output of [
-    { speech: null },
-    { speech: "Hi.", action: null, mood: "happy" },
-    { speech: null, action: { type: "wait", minutes: 1 } },
-    { speech: null, action: { ...none, type: "fly" } },
-    { speech: 5, action: null },
+    { speech: null, action: null },
+    { to: null, speech: "Hi.", action: null, mood: "happy" },
+    { to: null, speech: null, action: { type: "wait", minutes: 1 } },
+    { to: null, speech: null, action: { ...none, type: "fly" } },
+    { to: null, speech: 5, action: null },
   ]) {
     assert.equal(characterTurnSchema.safeParse(output).success, false);
   }
@@ -94,6 +109,30 @@ test("prompts never contain hidden facts (canary)", () => {
   assert.ok(bram.includes("CANARY-INVENTORY-5d1e"), "positive control: Bram sees his own inventory");
 });
 
+test("every agent's system prompt carries the world's premise, which gives nothing away", () => {
+  const premise = "CANARY-PREMISE-7f3a: a drowned kingdom.";
+  const withPremise = [
+    characterSystemPrompt("Mira", starterCast.characters.mira!, { premise }),
+    npcSystemPrompt("Old Tamsin", starterCast.npcs!.tamsin!, { premise }),
+    refereeSystemPrompt({ premise }),
+    refereeSystemPrompt({ premise, rules: { outcomes: "judgment", stats: null, health: null } }),
+    judgeSystemPrompt({ premise }),
+    narratorSystemPrompt(starterCast.narratorStyle, { premise }),
+  ];
+  for (const system of withPremise) assert.match(system, /\n\nThe world: CANARY-PREMISE-7f3a: a drowned kingdom\.\n\n/);
+  const without = [
+    characterSystemPrompt("Mira", starterCast.characters.mira!),
+    npcSystemPrompt("Old Tamsin", starterCast.npcs!.tamsin!),
+    refereeSystemPrompt(),
+    narratorSystemPrompt(starterCast.narratorStyle),
+  ];
+  for (const system of without) assert.doesNotMatch(system, /The world:/);
+  // The party reads the premise, so it must not spoil the discovery or the threats.
+  for (const secret of ["hall drain", "north wall", "sluice", "water", "ceiling"]) {
+    assert.ok(!starterCast.premise!.toLowerCase().includes(secret), `the premise gives away "${secret}"`);
+  }
+});
+
 test("the scripted provider fails explicitly when used out of order or too often", async () => {
   const request = { role: "character" as const, system: "", prompt: "", schema: characterTurnSchema, schemaName: "t" };
   const provider = new ScriptedProvider([
@@ -104,4 +143,88 @@ test("the scripted provider fails explicitly when used out of order or too often
   await assert.rejects(provider.generate(request), (error) => error instanceof ProviderError && error.kind === "refused");
   await assert.rejects(provider.generate(request), (error) => error instanceof ProviderError && error.kind === "script_exhausted");
   assert.equal(provider.remaining, 0);
+});
+
+test("an NPC reply must speak, and may answer someone and walk away", () => {
+  assert.deepEqual(toNpcParts({ speech: " Ask the bars. ", to: "mira", move: "mouth" }), {
+    speech: "Ask the bars.", addresseeId: "mira", destinationId: "mouth",
+  });
+  assert.deepEqual(toNpcParts({ speech: "Hm.", to: null, move: null }), { speech: "Hm." });
+  assert.throws(() => toNpcParts({ speech: " ", to: "mira", move: "mouth" }), /your turn to speak/);
+});
+
+test("a referee's flat ruling converts to the engine's ruling, in seconds", () => {
+  const unused = { challengeId: null, name: null, ability: null, difficulty: null, failureDamage: null, minutes: null };
+  assert.deepEqual(toRuling({ ...unused, decision: "existing", challengeId: "pry-bars", reason: "That is the bars." }), {
+    kind: "ruling", ruling: { decision: "existing", challengeId: "pry-bars", reason: "That is the bars." },
+  });
+  assert.deepEqual(toRuling({
+    ...unused, decision: "new", name: " Climb the arch ", ability: "dexterity", difficulty: "hard",
+    failureDamage: 2, minutes: 3, reason: "Loose brick.",
+  }), {
+    kind: "ruling",
+    ruling: {
+      decision: "new", name: "Climb the arch", ability: "dexterity", difficulty: "hard",
+      failureDamage: 2, seconds: 180, reason: "Loose brick.",
+    },
+  });
+  assert.deepEqual(toRuling({ ...unused, decision: "automatic", minutes: 1, reason: "Easy." }), {
+    kind: "ruling", ruling: { decision: "automatic", seconds: 60, reason: "Easy." },
+  });
+  assert.deepEqual(toRuling({ ...unused, decision: "impossible", reason: " Stone does not fly. " }), {
+    kind: "impossible", reason: "Stone does not fly.",
+  });
+  for (const [output, message] of [
+    [{ ...unused, decision: "existing", reason: "x" }, /existing requires challengeId/],
+    [{ ...unused, decision: "new", name: "Climb", ability: "dexterity", difficulty: "hard", minutes: 1, reason: "x" }, /requires failureDamage/],
+    [{ ...unused, decision: "new", name: "Climb", ability: "dexterity", difficulty: "hard", failureDamage: -1, minutes: 1, reason: "x" }, /negative/],
+    [{ ...unused, decision: "automatic", minutes: 61, reason: "x" }, /between 1 and 60/],
+    [{ ...unused, decision: "automatic", minutes: 1, reason: "  " }, /reason must not be empty/],
+  ] as const) {
+    assert.throws(() => toRuling(output), (error) => error instanceof ProposalError && message.test(error.message));
+  }
+  assert.equal(rulingSchema.safeParse({ ...unused, decision: "maybe", reason: "x" }).success, false);
+  assert.equal(rulingSchema.safeParse({ ...unused, decision: "new", difficulty: "brutal", reason: "x" }).success, false);
+});
+
+test("NPC and referee prompts carry their rules", () => {
+  const state = initialState(starterWorld("npc-prompts"));
+  const npc = renderNpcPrompt(perceive(state, "tamsin"), ["[0:00:00] Mira said to you: \"Hello?\""], []);
+  assert.match(npc, /Ridge Camp \(camp\)/);
+  assert.match(npc, /Mira said to you/);
+  assert.match(npc, /Set "to" to the ID of the one person you answer: mira, bram; or null\./);
+  assert.match(npc, /set "move" to one of mouth/);
+  assert.doesNotMatch(npc, /Elowen/, "Tamsin cannot see who is at the mouth");
+  const cued = renderNpcPrompt(perceive(state, "tamsin"), [], [], "cued");
+  assert.match(cued, /It is your turn to speak/);
+  assert.match(cued, /the one person you speak to: mira, bram/);
+  const agenda = renderNpcPrompt(perceive(state, "tamsin"), [], [], "agenda", undefined, ["CANARY-STEER: mention the goats"]);
+  assert.match(agenda, /Nobody has spoken to you, but you have aims of your own/);
+  assert.match(agenda, /## A request from the director, outside the story\n- CANARY-STEER: mention the goats/);
+  const system = npcSystemPrompt("Old Tamsin", starterCast.npcs!.tamsin!);
+  assert.match(system, /You are voicing Old Tamsin/);
+  assert.match(system, /not one of the main characters/);
+  assert.match(system, /forty years/);
+  assert.match(system, /What you work toward, and bring up unprompted: Warn anyone heading for the channel about the sluice/);
+
+  const ruling = renderRulingPrompt(state, "elowen", "read the old carvings", [], ["No such challenge here"]);
+  assert.match(ruling, /Elowen \(elowen\) attempts: "read the old carvings"/);
+  assert.match(ruling, /Pry open the bars \(pry-bars\): strength against 13; failure deals 2 damage; needs Crowbar; open/);
+  assert.match(ruling, /Difficulty: easy, moderate, hard\./);
+  assert.match(ruling, /Minutes: 1 to 10\./);
+  assert.match(ruling, /## Your previous ruling was rejected\n- No such challenge here/);
+  assert.doesNotMatch(ruling, /Shift the rubble/, "the referee sees only this location's challenges");
+  assert.match(refereeSystemPrompt(), /never decide whether the attempt succeeds/);
+  assert.match(characterSystemPrompt("Mira", starterCast.characters.mira!), /set "to" to their ID/);
+});
+
+test("a cancelled request never reaches the scripted provider's script", async () => {
+  const provider = new ScriptedProvider([{ role: "dm", output: { narration: "x" } }]);
+  const signal = AbortSignal.abort();
+  await assert.rejects(
+    provider.generate({ role: "dm", system: "", prompt: "", schema: characterTurnSchema, schemaName: "t", signal }),
+    (error) => error instanceof ProviderError && error.kind === "cancelled",
+  );
+  assert.equal(provider.remaining, 1);
+  assert.equal(provider.requests.length, 0);
 });

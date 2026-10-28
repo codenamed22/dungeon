@@ -9,6 +9,87 @@
   database written by the Phase 1 code upgrades in place. Agents call models
   through OpenRouter, tested against a simulated API; no live-model session has
   run yet.
+- **Phase 2b (ensemble): complete.** Verified 2026-10-28: typecheck and all 105
+  tests (unit and PostgreSQL integration) pass on local PostgreSQL 16. Speaker
+  selection by direct address with a fairness cap, NPCs voiced by the DM (Old
+  Tamsin in the starter adventure), DM rulings committed before the roll within
+  world limits, pause that cancels an uncommitted turn, a per-world scheduler
+  lease, cost limits, director mutes and cues, and a `report` command. A
+  12-turn live run on the starter adventure (`~deepseek/deepseek-pro-latest`,
+  reasoning low) opened the bars and reached the channel with no failed turns:
+  0% invalid proposals, an action on the first turn, 0.0019 credits and 16 s of
+  model time per turn (0.0226 credits in all). Rulings were the slowest calls,
+  averaging 17 s.
+- **Phase 3 (personal memory): complete.** Verified 2026-10-28: typecheck and all
+  116 tests (unit and PostgreSQL integration) pass on local PostgreSQL 16, and
+  the scripted rehearsal replays with a hearsay note and a commitment. Private
+  discoveries, evidence-checked beliefs whose source the engine derives
+  (reported, inferred, speculation), observations that supersede stale beliefs
+  with history kept, goals and commitments as events, scoped full-text recall
+  for characters and NPCs, and a `memory` inspection command. No live-model run
+  has used the memory features yet.
+- **Phase 4 (world progression): complete.** Verified 2026-10-28: typecheck and
+  all 133 tests (unit and PostgreSQL integration) pass on local PostgreSQL 16,
+  and each new behavior was checked by breaking it and watching its test fail.
+  Timed threats that stop travel and waiting, hidden delayed consequences of
+  checks, NPC agendas, a stall ladder (nudge, then a required action, then a
+  stop), and director steering that only its targets see, out of fiction. No
+  live-model run has used the progression features yet.
+- **Phase 5 (director UI): in progress.** The server side is complete. Verified
+  2026-10-28: the server typechecks and all 145 tests (unit and PostgreSQL
+  integration) pass on local PostgreSQL 16. That covers introduced events,
+  retcons, branching, saved setups, the HTTP API with its live event stream and
+  background runs, and the local-only guards. The React interface typechecks,
+  builds, and was driven end to end in headless Chrome against local
+  PostgreSQL, with no console errors. The run covered creating a world, the
+  scripted opening streaming live, a character's filtered view, prompt and memory
+  inspection, mute, steering, an introduced event, a retcon, a persona edit
+  reaching the agent's prompt, model search, branching, and the phone layout.
+  No live-model run has used the web director yet. Deployment with
+  authentication comes after local testing.
+- **UI overhaul (world creator, AI creator, premise, mobile): complete
+  locally.** Verified 2026-10-29: both projects typecheck, the interface builds,
+  and all 164 tests pass on local PostgreSQL 16. Worlds are made in a draft
+  editor (story, places, characters, items, challenges, threats, review) whose
+  operations are also the AI creator's tools; the AI creator is a panel dragged
+  in from the side that edits the draft directly, with Undo per message. Every
+  system prompt carries the world's premise. Headless Chrome drove it at
+  1440 px and 390 px against local PostgreSQL and a simulated OpenRouter, with
+  no console errors or sideways scrolling. That covered building a draft by
+  asking, Undo, Stop keeping partial work, a refused tool call, the model
+  picker, dragging the panel open and shut, hand editing, Undo after removing
+  something, Review's Fix links, creating and opening the world, the premise and
+  prompts in the Agents tab, dark mode, and the phone layouts with their sheets
+  and Back closing them. No live-model session has used the AI creator yet.
+- **Any genre (engine state, AI judgment, endings): complete locally.** Verified
+  2026-10-29: both projects typecheck, the interface builds, and all 184 tests
+  pass on local PostgreSQL 16. These include the 164 earlier tests, unchanged,
+  so worlds without rules, the fantasy adventures, and the scripted opening play
+  and replay as before. Each world now chooses how attempts are decided (dice,
+  or a referee AI judging against each challenge's hidden "what it takes"),
+  whether it has stats (three, under its own names) and health (under its own
+  name), and its pace (action or conversation). A world may also have endings,
+  set off by a challenge's success or failure, or by a threat. Judged outcomes
+  are recorded with the referee's reason and replay without asking the model.
+  An ended story takes only narration and retcons, and can be branched from
+  before the end. Prompts no longer assume a fantasy party. Three new stories
+  show the range: *The Night Market* (friendship and maybe more), *The 3 A.M.
+  Outage* (two engineers and a failing system), and *Dinner at Ashcombe House*
+  (a mystery with lying suspects). Headless Chrome drove the rules card, the
+  hidden criteria, the Endings tab, Undo after turning stats off, and a
+  scripted judged turn to an ending, at 1440 px and 390 px, with no console
+  errors or sideways scrolling. No live-model run has used judgment yet.
+- **Google sign-in: complete locally.** Verified 2026-10-29: both projects
+  typecheck, the interface builds, and all 192 tests pass on local PostgreSQL
+  16. Sign-in uses Auth.js (`@auth/core` 0.41.3, the version under Traveller's
+  next-auth) with Traveller's variables, Google provider, JWT session cookie,
+  and `ALLOWED_EMAILS`. Only allowed accounts can sign in, and each request
+  checks the list again. With none of the variables set, the no-login,
+  this-machine-only mode is unchanged. Tests sign in end to end against a
+  simulated Google. Headless Chrome drove sign-in, use, sign-out, and a refused
+  account choosing another, at 1440 px and 390 px, with no console errors; the
+  earlier genre checks still pass without a login. Signing in with a real
+  Google account is still to do.
 - Development and tests use local PostgreSQL or a Neon development branch, not the
   `production` branch.
 
@@ -145,7 +226,8 @@ Knowledge permissions:
 Resolve actions serially in the MVP. In-world time advances through speech,
 actions, travel, and explicit waiting, not through model latency. Each utterance
 costs a world-defined number of seconds, so long debates let time pass. Timed
-threats, weather, and NPC activity will consume this clock in a later phase.
+threats fire when the clock reaches them, and NPCs with agendas speak up as it
+passes; weather is out of scope for now.
 
 A proposal built on a stale revision is regenerated from fresh context, within
 the same revision bound.
@@ -154,6 +236,12 @@ Detect repeated debate and invite a materially different approach with an
 explicit tradeoff. Personal goals and risk tolerances support genuine
 disagreement. Director steering can request radical alternatives but cannot
 invent their success.
+
+Phase 4 bounds a stall with a ladder over consecutive character turns that only
+spoke: after 3, prompts ask for a materially different approach; after 5, the
+next turn must include an action, and a speech-only reply is rejected and sent
+back; the run stops after 8 as a backstop. An action of any kind, including
+waiting, resets the count, and NPC turns neither add to it nor reset it.
 
 ## Reliability safeguards
 
@@ -270,6 +358,15 @@ retrieval, private discoveries (facts revealed only to their perceivers), and an
 inspection view. Verify recall after transcript truncation and exclusion of
 private information, including search snippets.
 
+Acceptance:
+- A non-witness cannot retrieve a private discovery, by search or snippet, and
+  the narrator and referee never see one.
+- A belief's source derives from its cited evidence; hearsay stays hearsay even
+  beside firsthand evidence, and a citation of an unperceived event is refused.
+- A newer observation supersedes a belief; older beliefs remain as history.
+- An early discovery is recalled after it leaves the recent-event window.
+- Replay and save/resume reproduce perceivers, beliefs, and search results.
+
 ### Phase 4: world progression
 
 Add timed threats as world-defined triggers evaluated when the clock advances
@@ -277,6 +374,21 @@ Add timed threats as world-defined triggers evaluated when the clock advances
 stagnation detection, and explicit alternative-plan steering. A stalled debate
 must lead to a committed decision or a meaningful consequence within a bounded
 number of turns: neither endless debate nor agreement without action.
+
+Acceptance:
+- A threat fires once the clock reaches it, earliest first, striking only those
+  where it falls; waiting and travel stop at it, and a threat that fires after a
+  turn's speech ends that turn. Replay rejects any history that skips, moves,
+  or alters a threat.
+- A check's outcome can arm a waiting threat for later or disarm a pending one;
+  the consequence is hidden, follows its check in the same turn, and is felt
+  only when it fires.
+- An NPC with an agenda speaks up when its interval has passed and a party
+  member is present, never twice running.
+- A stalled debate is nudged, then must act, and the run stops if it still
+  stalls.
+- Director steering reaches only its targets, once, in their next prompt; it is
+  never perceived or searchable, and it cannot make an action succeed.
 
 ### Phase 5: director UI
 
@@ -286,6 +398,42 @@ is recorded but never stored as character memory. Retcons use compensating
 events; timeline branching forks a world at a chosen revision. The interface
 binds to localhost or requires authentication, because it exposes private
 memories.
+
+Acceptance:
+- The director can create a world from an adventure or a seed, write each
+  agent's persona, choose models per role, and have the setup used by the next
+  turn, in the web director and the CLI alike.
+- The director can build a world in a draft editor, by hand or by asking the AI
+  creator, whose tool calls are the editor's own operations; review what stops
+  it being played; and create it. Each AI creator message can be undone unless
+  the draft changed since, and stopping keeps what it did.
+- Every AI call's system prompt carries the world's premise, and no secret
+  reaches the main characters through it.
+- A world chooses dice or AI judgment, stats and health (or none) under its own
+  names, its pace, and optional endings. A judged outcome is recorded with its
+  reason, applies only the effects the world declared, and replays without the
+  model. A challenge's hidden criteria reach only the referee. After an ending,
+  only narration and retcons commit.
+- The interface works at phone width without sideways scrolling.
+- Committed events reach every open browser within a second, in order, without
+  gaps after a reconnect; the director sees everything, and a character's view
+  shows only what that character perceived.
+- An introduced event is perceived by the conscious characters where it
+  happens, recalled like any other event, and may block or open a way; replay
+  rejects one that names an unknown place or route.
+- A retcon withdraws narration, speech, or an introduced event without route
+  changes from the agents who perceived it, in transcripts and search, and
+  tells them it is withdrawn; the admin log keeps the original. A retcon cannot
+  undo state changes, nor apply twice.
+- A branch at the end of any turn creates a new world with that history, its
+  perceivers, its setup, and its retry receipts, which replays and plays on
+  independently of the original.
+- With no login, the server listens only on a loopback address and answers only
+  local host names and same-site JSON writes; a deployed version requires
+  authentication. With Google sign-in (Auth.js, as in Traveller), only accounts
+  in `ALLOWED_EMAILS` can sign in, every API route but health and the session
+  check requires one, and the server listens beyond this machine only with an
+  https `AUTH_URL`.
 
 ## Evaluation adventure
 
@@ -301,6 +449,8 @@ incrementally; each check becomes testable in the phase shown.
 | New observations supersede stale beliefs without erasing history. | Phase 3 |
 | Save/resume preserves knowledge boundaries. | Phase 2a (perceivers); Phase 3 (memories) |
 | Radical alternatives change the approach without inventing success. | Phase 2b (rulings); Phase 4 (steering) |
+| A delayed consequence strikes later, unless averted. | Phase 4 |
+| A stalled debate ends in an action or a stop, within bounded turns. | Phase 4 |
 
 Knowledge checks use canary tokens: unique phrases planted in private content.
 Deterministic tests assert that no non-witness context contains them; live-model

@@ -65,6 +65,7 @@ test("schema migrations", {
       try {
         await engine.initialize();
         assert.deepEqual(await versions(admin, schema), migrations.map((migration) => migration.version));
+        assert.deepEqual(await engine.listDrafts(), []);
         const upgraded = await engine.getWorld(PHASE1_SEED.id);
         assert.equal(upgraded.elapsedSeconds, 480);
         assert.equal(upgraded.speechSeconds, 10);

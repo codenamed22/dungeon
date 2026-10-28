@@ -333,3 +333,40 @@ test("rate limits, outages, and network failures are retried with backoff, honor
   assert.equal(fake.requests.length, 11);
   assert.deepEqual(fake.delays, [3000, 2000, 1000, 1000, 1000, 30_000]);
 });
+
+test("a cancelled call stops at once and is never retried; reported cost is kept", async () => {
+  const { provider } = await setUp([
+    completion('{"speech": "Hi.", "quantity": null}', { usage: { prompt_tokens: 10, completion_tokens: 2, cost: 0.0004 } }),
+  ]);
+  assert.deepEqual((await provider.generate(request)).usage, { inputTokens: 10, outputTokens: 2, cost: 0.0004 });
+
+  const { provider: idle, requests: unsent } = await setUp([completion("{}")]);
+  assert.equal((await failureOf(idle.generate({ ...request, signal: AbortSignal.abort() }))).kind, "cancelled");
+  assert.equal(unsent.length, 0);
+
+  // Pausing while the request is in flight aborts it.
+  const inFlight = new AbortController();
+  let sent = 0;
+  const { provider: cancelling } = await setUp([], {
+    fetch: (async (input: string | URL | Request, init: RequestInit = {}) => {
+      if (String(input).endsWith("/models")) return Response.json({ data: CATALOG });
+      sent += 1;
+      inFlight.abort();
+      init.signal?.throwIfAborted();
+      return completion("{}");
+    }) as typeof globalThis.fetch,
+  });
+  assert.equal((await failureOf(cancelling.generate({ ...request, signal: inFlight.signal }))).kind, "cancelled");
+  assert.equal(sent, 1);
+
+  // Pausing during a retry's backoff ends the wait.
+  const backoff = new AbortController();
+  const { provider: retrying, requests } = await setUp([errorReply(503, "Overloaded"), completion("{}")], {
+    sleep: () => {
+      backoff.abort();
+      return new Promise(() => {});
+    },
+  });
+  assert.equal((await failureOf(retrying.generate({ ...request, signal: backoff.signal }))).kind, "cancelled");
+  assert.equal(requests.length, 1);
+});

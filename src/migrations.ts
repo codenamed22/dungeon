@@ -110,6 +110,92 @@ export const migrations: readonly Migration[] = [
       await rebuildWorlds(client, ns);
     },
   },
+  {
+    version: 3,
+    name: "phase2b_leases_and_costs",
+    async up(client, ns) {
+      await client.query(`
+        -- One scheduler per world. A holder keeps its lease by renewing it before
+        -- it expires; an expired lease can be taken over.
+        CREATE TABLE ${ns}.adventure_leases (
+          world_id text PRIMARY KEY REFERENCES ${ns}.adventure_worlds(id),
+          holder text NOT NULL,
+          expires_at timestamptz NOT NULL
+        );
+        -- What each model call was for, and what the provider charged for it.
+        ALTER TABLE ${ns}.adventure_turn_traces
+          ADD COLUMN task text,
+          ADD COLUMN cost double precision;
+      `);
+    },
+  },
+  {
+    version: 4,
+    name: "director_mutes",
+    async up(client, ns) {
+      await client.query(`
+        -- Characters the director has muted: the scheduler skips them until they
+        -- are unmuted or cued. Director state, never part of the fiction.
+        CREATE TABLE ${ns}.adventure_mutes (
+          world_id text NOT NULL REFERENCES ${ns}.adventure_worlds(id),
+          character_id text NOT NULL,
+          muted_at timestamptz NOT NULL DEFAULT now(),
+          PRIMARY KEY (world_id, character_id)
+        );
+      `);
+    },
+  },
+  {
+    version: 5,
+    name: "phase3_memory_search",
+    async up(client, ns) {
+      await client.query(`
+        -- Full-text search over each event's string fields, for scoped recall.
+        -- Queries must use this exact expression to use the index.
+        CREATE INDEX adventure_events_search ON ${ns}.adventure_events
+          USING gin (jsonb_to_tsvector('english'::regconfig, event -> 'data', '["string"]'::jsonb));
+      `);
+    },
+  },
+  {
+    version: 6,
+    name: "director_setups",
+    async up(client, ns) {
+      await client.query(`
+        -- How the director set up each world's agents: personas, narrator style,
+        -- and models. Director state, never part of the fiction; the application
+        -- validates its shape.
+        CREATE TABLE ${ns}.adventure_setups (
+          world_id text PRIMARY KEY REFERENCES ${ns}.adventure_worlds(id),
+          setup jsonb NOT NULL,
+          updated_at timestamptz NOT NULL DEFAULT now()
+        );
+      `);
+    },
+  },
+  {
+    version: 7,
+    name: "world_drafts",
+    async up(client, ns) {
+      await client.query(`
+        -- Worlds being written in the creator, with the AI creator's chat log.
+        -- Director state like setups; the application validates its shape.
+        -- world_id is the world it becomes, chosen when it is published, so it
+        -- has no foreign key: the world may not exist yet.
+        CREATE TABLE ${ns}.world_drafts (
+          id text PRIMARY KEY,
+          draft jsonb NOT NULL,
+          chat jsonb NOT NULL DEFAULT '[]'::jsonb,
+          revision integer NOT NULL DEFAULT 1 CHECK (revision > 0),
+          world_id text,
+          published_at timestamptz,
+          created_at timestamptz NOT NULL DEFAULT now(),
+          updated_at timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE INDEX world_drafts_updated_at ON ${ns}.world_drafts (updated_at DESC);
+      `);
+    },
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = migrations.at(-1)!.version;

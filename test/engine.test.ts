@@ -266,22 +266,50 @@ test("PostgreSQL engine integration", {
       await engine.createWorld(sampleWorld("traces"));
       for (const attempt of [1, 2]) {
         await engine.recordTrace({
-          worldId: "traces", turnId: "t1-mira", role: "character", actorId: "mira", attempt,
+          worldId: "traces", turnId: "t1-mira", role: "character", task: "character_turn", actorId: "mira", attempt,
           provider: "scripted", model: "scripted", promptVersion: "test",
           request: { system: "system", prompt: "prompt" }, response: { speech: "Hi.", action: null },
           outcome: attempt === 1 ? "invalid_action" : "committed",
           error: attempt === 1 ? "INVALID_ACTION: No route" : null,
-          requestId: "t1-mira", inputTokens: 10, outputTokens: 2, latencyMs: 12.6,
+          requestId: "t1-mira", inputTokens: 10, outputTokens: 2, cost: attempt === 1 ? null : 0.00042, latencyMs: 12.6,
         });
       }
       const traces = await engine.getTraces("traces");
-      assert.deepEqual(traces.map((trace) => [trace.attempt, trace.outcome, trace.latencyMs]), [
-        [1, "invalid_action", 13],
-        [2, "committed", 13],
+      assert.deepEqual(traces.map((trace) => [trace.attempt, trace.task, trace.outcome, trace.cost, trace.latencyMs]), [
+        [1, "character_turn", "invalid_action", null, 13],
+        [2, "character_turn", "committed", 0.00042, 13],
       ]);
       assert.deepEqual(traces[0]?.response, { speech: "Hi.", action: null });
       assert.deepEqual(traces[0]?.request, { system: "system", prompt: "prompt" });
       assert.deepEqual((await engine.getTraces("traces", 1)).map((trace) => trace.attempt), [2]);
+    });
+
+    await t.test("a world's scheduler lease has one holder until it is released or expires", async () => {
+      await engine.createWorld(sampleWorld("leases"));
+      assert.equal(await engine.acquireLease("leases", "a", 60_000), true);
+      assert.equal(await engine.acquireLease("leases", "a", 60_000), true, "the holder renews");
+      assert.equal(await other.acquireLease("leases", "b", 60_000), false, "a second scheduler is refused");
+      await other.releaseLease("leases", "b");
+      assert.equal(await other.acquireLease("leases", "b", 60_000), false, "only the holder can release it");
+      await engine.releaseLease("leases", "a");
+      assert.equal(await other.acquireLease("leases", "b", 1), true, "a released lease is free");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.equal(await engine.acquireLease("leases", "a", 60_000), true, "an expired lease can be taken over");
+      assert.equal(await other.acquireLease("leases", "b", 60_000), false);
+      await assert.rejects(engine.acquireLease("leases", "a", 0), errorCode("INVALID_INPUT"));
+      await assert.rejects(engine.acquireLease("missing-world", "a", 1000));
+    });
+
+    await t.test("the director's mutes are kept per world, for known characters only", async () => {
+      await engine.createWorld(sampleWorld("mutes"));
+      assert.deepEqual(await engine.getMuted("mutes"), []);
+      assert.deepEqual(await engine.setMuted("mutes", ["mira", "bram"], true), ["bram", "mira"]);
+      assert.deepEqual(await other.setMuted("mutes", ["mira"], true), ["bram", "mira"], "muting twice changes nothing");
+      assert.deepEqual(await engine.setMuted("mutes", ["mira", "elowen"], false), ["bram"]);
+      await assert.rejects(engine.setMuted("mutes", ["nobody"], true), errorCode("NOT_FOUND"));
+      await assert.rejects(engine.getMuted("missing-world"), errorCode("NOT_FOUND"));
+      assert.deepEqual(await engine.getMuted("mutes"), ["bram"]);
+      assert.equal((await engine.getWorld("mutes")).revision, 1, "mutes are not events");
     });
 
     await t.test("invalid snapshots and valid-but-divergent snapshots fail explicitly", async () => {
