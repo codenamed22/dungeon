@@ -16,7 +16,7 @@ const SUGGESTIONS = [
 ];
 
 /** Reading the draft or checking it changes nothing, so the change card leaves those out. */
-const READS = new Set(["get_draft", "check_draft"]);
+const READS = new Set(["get_draft", "check_draft", "get_example"]);
 
 interface LiveRun {
   message: string;

@@ -6,18 +6,19 @@ import type { AddressInfo } from "node:net";
 import path from "node:path";
 import test from "node:test";
 import { Pool } from "pg";
+import { ADVENTURES } from "../src/adventures/index.ts";
 import { OpenRouterChat } from "../src/agents/openrouter.ts";
 import type { ChatSettings, OpenRouterModel } from "../src/agents/openrouter.ts";
 import { castProblems, creatorSystemPrompt } from "../src/agents/prompts.ts";
 import { ProviderConfigError, ScriptedProvider } from "../src/agents/provider.ts";
 import { runCreator } from "../src/creator/assistant.ts";
-import type { CreatorEvent, CreatorLimits } from "../src/creator/assistant.ts";
+import type { CreatorEvent, CreatorLimits, CreatorTurn } from "../src/creator/assistant.ts";
 import {
-  blankDraft, connectPlaces, draftProblems, hasErrors, publishable, remove, setPersona, setWorld, slugify, upsertChallenge,
+  blankDraft, connectPlaces, draftProblems, draftSchema, hasErrors, publishable, remove, setPersona, setWorld, slugify, upsertChallenge,
   upsertCharacter, upsertEnding, upsertItem, upsertPlace, upsertThreat,
 } from "../src/creator/operations.ts";
 import type { Draft, OperationResult } from "../src/creator/operations.ts";
-import { creatorToolDefinitions, runCreatorTool } from "../src/creator/tools.ts";
+import { creatorExamples, creatorToolDefinitions, runCreatorTool } from "../src/creator/tools.ts";
 import { AdventureEngine } from "../src/engine.ts";
 import { EngineError, validateWorld, worldProblems } from "../src/model.ts";
 import type { WorldSeed } from "../src/model.ts";
@@ -144,18 +145,41 @@ test("removing something removes every reference to it, and says what it left st
   ]);
 });
 
+test("a new thing takes the ID it is given, so later calls can refer to it straight away", () => {
+  const draft = build(
+    blankDraft(),
+    (current) => upsertPlace(current, { id: "grand-hall", name: "The Grand Hall" }),
+    (current) => upsertPlace(current, { id: "vault", name: "Vault" }),
+    (current) => connectPlaces(current, { fromId: "grand-hall", toId: "vault", minutes: 2 }),
+    (current) => upsertItem(current, { id: "keycard", name: "Guard's keycard" }),
+    (current) => upsertCharacter(current, { id: "ellis", name: "Ellis", placeId: "vault", npc: true, itemIds: ["keycard"] }),
+  );
+  assert.deepEqual(draft.seed.locations.map((location) => location.id), ["grand-hall", "vault"]);
+  assert.deepEqual(draft.seed.characters.map((character) => [character.id, character.inventory]), [["ellis", { keycard: 1 }]]);
+  assert.equal(upsertPlace(draft, { id: "vault", description: "Steel and silence." }).summary, "Updated place Vault (vault).");
+  assert.equal(upsertPlace(draft, { name: "Vault" }).summary, "Added place Vault (vault-2).", "without an ID, the name decides");
+
+  // With judgment, a challenge without a difficulty is moderate.
+  const judged = upsertChallenge(draft, { id: "crack-vault", name: "Crack the vault", placeId: "vault", minutes: 5, criteria: "They have the combination." });
+  assert.equal(judged.draft.seed.challenges[0]!.difficulty, 12);
+});
+
 test("the creator refuses edits that would break the world, with reasons a person or a model can act on", () => {
   const draft = lighthouse();
   const refusal = (edit: () => unknown, message: RegExp) => assert.throws(edit, (error: unknown) => (
     error instanceof EngineError && error.code === "INVALID_INPUT" && message.test(error.message)
   ));
-  refusal(() => upsertPlace(draft, { id: "attic", name: "Attic" }), /no place with ID "attic"/);
+  refusal(() => upsertPlace(draft, { id: "attic", description: "Dusty." }), /^There is no place with ID "attic" to change, and a new place needs a name\.$/);
+  refusal(() => upsertPlace(draft, { id: "ada", name: "Ada's Cot" }), /^The ID "ada" already belongs to Ada\.$/);
+  refusal(() => upsertItem(draft, { id: "Rope Coil", name: "Rope coil" }), /^"Rope Coil" can't be an ID: .+ such as rope-coil\.$/);
+  refusal(() => upsertThreat(draft, { id: "squall", text: "Rain." }), /no threat with ID "squall" to change, and a new threat needs a name/);
   refusal(() => upsertPlace(draft, {}), /A new place needs a name/);
   refusal(() => upsertPlace(draft, { name: "   " }), /^name can't be empty$/);
   refusal(() => connectPlaces(draft, { fromId: "jetty", toId: "stair", minutes: 0 }), /^minutes must be at least 1$/);
   refusal(() => setWorld(draft, { premise: "x".repeat(1001) }), /^premise is too long \(at most 1000 characters\)$/);
   refusal(() => connectPlaces(draft, { fromId: "jetty", toId: "jetty", minutes: 1 }), /cannot lead to itself/);
   refusal(() => upsertCharacter(draft, { name: "Cat" }), /needs a name and a starting place/);
+  refusal(() => upsertChallenge(draft, { name: "Climb", placeId: "stair", ability: "strength", minutes: 2 }), /a stat, a difficulty, and the minutes/);
   refusal(() => upsertCharacter(draft, { id: "ada", hp: 20 }), /cannot have more than 12 hit points/);
   refusal(() => upsertCharacter(draft, { id: "ada", itemIds: ["lantern"] }), /no item with ID "lantern"/);
   refusal(() => setPersona(blankDraftWith("Cat"), { characterId: "cat", summary: "A cat." }), /needs a summary, a voice, and at least one goal/);
@@ -303,6 +327,26 @@ test("the creator's tools describe every field, and report bad calls back to the
   assert.deepEqual(JSON.parse(checked.content).problems.slice(0, 1), ["error: Add at least one place."]);
 });
 
+test("the AI creator can read every bundled adventure as an example, and its instructions list them", () => {
+  const draft = lighthouse();
+  for (const adventure of ADVENTURES) {
+    const read = runCreatorTool(draft, "get_example", JSON.stringify({ id: adventure.id }));
+    assert.deepEqual([read.ok, read.changed, read.draft, read.summary], [true, false, draft, `Read the example "${adventure.name}".`]);
+    const { note, example } = JSON.parse(read.content);
+    assert.match(note, /write the director's own story/);
+    assert.deepEqual(example, JSON.parse(JSON.stringify({ seed: adventure.world(adventure.id), cast: adventure.cast })));
+    assert.ok(draftSchema.safeParse(example).success, `${adventure.id} reads in the same shape as a draft`);
+  }
+  assert.match(JSON.parse(runCreatorTool(draft, "get_example", JSON.stringify({ id: "atlantis" })).content).error, /Invalid arguments/);
+
+  const prompt = creatorSystemPrompt({}, creatorExamples());
+  assert.match(prompt, /Example worlds, finished and played: read one with get_example/);
+  assert.match(prompt, /- outage: The 3 A\.M\. Outage\. .+ \(outcomes judged by the referee, no stats, no health; action pace\)/);
+  for (const adventure of ADVENTURES) assert.ok(prompt.includes(`- ${adventure.id}: ${adventure.name}. ${adventure.summary}`), adventure.id);
+  assert.ok(prompt.indexOf("Example worlds") < prompt.indexOf("How to work:"));
+  assert.doesNotMatch(creatorSystemPrompt(), /Example worlds/);
+});
+
 // A simulated OpenRouter: each request goes to a handler, which returns the completion or waits to be cancelled.
 type Handler = (body: Record<string, any>, signal: AbortSignal) => Promise<unknown>;
 
@@ -342,13 +386,16 @@ function chatWith(handler: Handler, settings: Partial<ChatSettings> = {}): OpenR
   }, catalog);
 }
 
-async function creatorRun(handler: Handler, options: { draft?: Draft; limits?: CreatorLimits; signal?: AbortSignal } = {}) {
+async function creatorRun(
+  handler: Handler,
+  options: { draft?: Draft; limits?: CreatorLimits; signal?: AbortSignal; history?: CreatorTurn[] } = {},
+) {
   const events: CreatorEvent[] = [];
   const saved: Draft[] = [];
   const run = await runCreator({
     chat: chatWith(handler),
     draft: options.draft ?? blankDraft(),
-    history: [],
+    history: options.history ?? [],
     message: "A storm lighthouse for two.",
     onEvent: (event) => events.push(event),
     save: async (draft) => saved.push(draft) + 1,
@@ -386,7 +433,9 @@ test("the AI creator calls tools, sends their results back with its own message 
   assert.deepEqual(first.provider, { require_parameters: true });
   assert.equal(first.tool_choice, undefined);
   assert.ok(first.tools.some((tool: any) => tool.function.name === "upsert_challenge"));
+  assert.ok(first.tools.some((tool: any) => tool.function.name === "get_example"));
   assert.equal(first.messages[0].role, "system");
+  assert.match(first.messages[0].content, /- night-market: The Night Market\./);
   assert.equal(first.messages.at(-1).content, "A storm lighthouse for two.\n\n(The draft is empty.)");
 
   // The assistant's message goes back as it came, reasoning included, then one result per call.
@@ -400,7 +449,7 @@ test("the AI creator calls tools, sends their results back with its own message 
   assert.equal(saved.length, 1);
   assert.deepEqual(saved[0]!.seed.locations.map((location) => location.id), ["jetty"]);
   assert.equal(run.draft, saved[0]);
-  assert.equal(run.reply, "Starting with the coast.\n\nI set the title and premise, and added the jetty.");
+  assert.equal(run.reply, "I set the title and premise, and added the jetty.", "text sent with tool calls is progress, not the reply");
   assert.deepEqual(run.tools.map((line) => [line.name, line.ok]), [["set_world", true], ["upsert_place", true], ["upsert_place", false]]);
   assert.deepEqual(run.usage, { calls: 2, inputTokens: 2000, outputTokens: 200, cost: 0.004 });
   assert.equal(run.stopped, undefined);
@@ -413,7 +462,17 @@ test("the AI creator stops at its limits, on cancellation, and on provider error
   const checking = async () => completion({ tool_calls: [toolCall("c", "check_draft", {})] });
   const rounds = await creatorRun(checking, { limits: { maxRounds: 3, maxToolCalls: 40, maxCost: 10, maxTokens: 1e9 } });
   assert.equal(rounds.run.usage.calls, 3);
-  assert.match(rounds.run.stopped!, /after 3 model calls/);
+  assert.match(rounds.run.stopped!, /after 3 model calls, the limit for one message, before it finished/);
+  assert.equal(rounds.run.reply, "", "a run cut off before it finished has no reply");
+
+  // The next message knows the last one was cut off, and what it did.
+  const asked: Record<string, any>[] = [];
+  await creatorRun(async (body) => {
+    asked.push(body);
+    return completion({ content: "Done." });
+  }, { history: [{ message: "Build it all.", reply: "", tools: [{ name: "upsert_place", summary: "Added place Hall (hall).", ok: true }], stopped: rounds.run.stopped }] });
+  assert.equal(asked[0]!.messages[2].content, "(No reply.)\n\nChanges made: Added place Hall (hall).\n\n"
+    + `(This was cut off before it finished: ${rounds.run.stopped} Anything not listed above was not done.)`);
 
   const requests: Record<string, any>[] = [];
   const many = await creatorRun(async (body) => {

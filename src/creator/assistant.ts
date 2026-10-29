@@ -4,7 +4,7 @@ import { ProviderError } from "../agents/provider.ts";
 import type { ModelUsage } from "../agents/provider.ts";
 import { draftProblems } from "./operations.ts";
 import type { Draft, DraftProblem } from "./operations.ts";
-import { creatorToolDefinitions, runCreatorTool } from "./tools.ts";
+import { creatorExamples, creatorToolDefinitions, runCreatorTool } from "./tools.ts";
 
 // The AI creator's loop for one message from the director: the model calls
 // tools, sees their results, and calls more, until it replies or a limit stops
@@ -25,7 +25,7 @@ export interface CreatorLimits {
   maxTokens: number;
 }
 
-export const CREATOR_LIMITS: CreatorLimits = { maxRounds: 8, maxToolCalls: 40, maxCost: 0.5, maxTokens: 400_000 };
+export const CREATOR_LIMITS: CreatorLimits = { maxRounds: 16, maxToolCalls: 60, maxCost: 0.5, maxTokens: 400_000 };
 
 export interface CreatorUsage {
   calls: number;
@@ -49,6 +49,7 @@ export type CreatorEvent =
 
 export interface CreatorRun {
   draft: Draft;
+  /** The model's closing message; empty if it was stopped before it finished. */
   reply: string;
   tools: ToolLine[];
   usage: CreatorUsage;
@@ -62,9 +63,12 @@ export interface CreatorTurn {
   message: string;
   reply: string;
   tools: readonly ToolLine[];
+  stopped?: string | undefined;
 }
 
 const HISTORY_TURNS = 6;
+/** Tools that only read, so a turn's changes leave them out. */
+const READS = new Set(["get_draft", "check_draft", "get_example"]);
 const HISTORY_REPLY_CHARS = 2000;
 
 /** Counts, never content: the draft's text reaches the model only through tool results. */
@@ -80,10 +84,14 @@ function draftStatus(draft: Draft): string {
 }
 
 function conversation(draft: Draft, history: readonly CreatorTurn[], message: string): unknown[] {
-  const messages: unknown[] = [{ role: "system", content: creatorSystemPrompt(frameOf(draft.cast, draft.seed)) }];
+  const messages: unknown[] = [{ role: "system", content: creatorSystemPrompt(frameOf(draft.cast, draft.seed), creatorExamples()) }];
   for (const turn of history.slice(-HISTORY_TURNS)) {
-    const changes = turn.tools.filter((line) => line.ok && line.name !== "get_draft" && line.name !== "check_draft");
-    const reply = [turn.reply.slice(0, HISTORY_REPLY_CHARS) || "(No reply.)", changes.length > 0 ? `Changes made: ${changes.map((line) => line.summary).join(" ")}` : ""];
+    const changes = turn.tools.filter((line) => line.ok && !READS.has(line.name));
+    const reply = [
+      turn.reply.slice(0, HISTORY_REPLY_CHARS) || "(No reply.)",
+      changes.length > 0 ? `Changes made: ${changes.map((line) => line.summary).join(" ")}` : "",
+      turn.stopped ? `(This was cut off before it finished: ${turn.stopped} Anything not listed above was not done.)` : "",
+    ];
     messages.push({ role: "user", content: turn.message }, { role: "assistant", content: reply.filter(Boolean).join("\n\n") });
   }
   messages.push({ role: "user", content: `${message}\n\n(${draftStatus(draft)})` });
@@ -107,7 +115,8 @@ export async function runCreator(options: {
   const definitions = creatorToolDefinitions();
   const usage: CreatorUsage = { calls: 0, inputTokens: 0, outputTokens: 0, cost: 0 };
   const tools: ToolLine[] = [];
-  const replies: string[] = [];
+  // Text that comes with tool calls is progress, shown as it streams; the reply is what the model says once it is done.
+  let reply = "";
   let draft = options.draft;
   let toolCalls = 0;
   let stopped: string | undefined;
@@ -128,24 +137,24 @@ export async function runCreator(options: {
         break;
       }
       if (round > limits.maxRounds) {
-        stopped = `Stopped after ${limits.maxRounds} model calls, the limit for one message.`;
+        stopped = `Stopped after ${limits.maxRounds} model calls, the limit for one message, before it finished.`;
         break;
       }
-      const reply = await chat.complete(messages, definitions, signal);
-      count(reply.usage);
-      const text = reply.content?.trim();
-      if (text) {
-        replies.push(text);
-        onEvent({ type: "text", text });
+      const answer = await chat.complete(messages, definitions, signal);
+      count(answer.usage);
+      const text = answer.content?.trim();
+      if (text) onEvent({ type: "text", text });
+      if (answer.toolCalls.length === 0) {
+        reply = text ?? "";
+        break;
       }
-      if (reply.toolCalls.length === 0) break;
-      messages.push(reply.message ?? {
+      messages.push(answer.message ?? {
         role: "assistant",
-        content: reply.content,
-        tool_calls: reply.toolCalls.map((call) => ({ id: call.id, type: "function", function: { name: call.name, arguments: call.arguments } })),
+        content: answer.content,
+        tool_calls: answer.toolCalls.map((call) => ({ id: call.id, type: "function", function: { name: call.name, arguments: call.arguments } })),
       });
       let changed = false;
-      for (const call of reply.toolCalls) {
+      for (const call of answer.toolCalls) {
         // Every call needs an answer, or the next request is malformed.
         if (toolCalls >= limits.maxToolCalls) {
           stopped = `Stopped at ${limits.maxToolCalls} tool calls, the limit for one message.`;
@@ -179,7 +188,7 @@ export async function runCreator(options: {
   }
   return {
     draft,
-    reply: replies.join("\n\n"),
+    reply,
     tools,
     usage,
     ...(stopped === undefined ? {} : { stopped }),

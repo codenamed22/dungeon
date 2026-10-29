@@ -254,6 +254,52 @@
       to the threat's own text. Event #59 of that run keeps the old narration.
 
   Verified after both fixes: all 213 tests pass.
+- **Bundled stories as the AI creator's examples: complete locally.** The
+  user asked that the stories we built be there for the AI creator to refer
+  to. Its system prompt now lists each bundled adventure by ID, name, summary,
+  rules, and pace, and tells it to read the one closest to the director's story
+  before building, borrowing structure rather than names, text, or plot unless
+  asked for a copy or a variation. A read-only tool, `get_example`, returns an
+  adventure's whole world and cast in the same shape as `get_draft`: 2,000 to
+  10,500 characters each, loaded only when asked for. The panel and the
+  conversation history count it as a read, not a change.
+
+  Verified 2026-10-29: typecheck, both builds, and all 214 tests pass.
+- **The AI creator's slowness and unkept promises: fixed locally.** The user
+  saw it slow down, or say it would change something without doing it. A
+  timed live run on DeepSeek V4 Flash (low reasoning) found why: models give
+  a new thing an ID, and the tools refused any ID that didn't exist yet ("There
+  is no place with ID grand-hall"). A heist world failed 5 calls that way and
+  stopped at the 8-call limit with only places, items, and characters; asked to
+  add a bribable guard, it retried for all 8 calls, added nothing, and replied
+  "I'll add a bribeable guard NPC…". The reply joined every progress note, so
+  a cut-off message read as a list of promises. Calls themselves took 2 to 9
+  seconds, apart from a first call that plans the whole world (35 s).
+  - An upsert with an ID that doesn't exist creates the thing under that ID,
+    so the model can add things and connect them in one reply. A malformed or
+    taken ID, or one with too little to create, is refused with a reason.
+  - Limits per message: 16 model calls (from 8) and 60 tool calls (from 40);
+    the 0.50-credit and 400,000-token caps stay.
+  - The reply is the model's closing message; progress notes still show as it
+    works. A message cut off by a limit has no reply, says it stopped before
+    finishing, and the next message is told what was and wasn't done.
+  - Its instructions: batch every call whose turn has come, name new things
+    itself, write nothing but tool calls while working, never promise, fix
+    failed calls and carry on, and read the closest example first when the
+    draft is empty.
+  - A judged challenge without a difficulty is moderate; dice still need one.
+
+  The same two messages after the first three fixes: the heist world was
+  complete in 5 model calls and 131 s, with 41 tool calls, no errors, and no
+  warnings; the guard, the bribe challenge, and a "caught" ending took 4 calls
+  and 22 s. The remaining failed calls were judged challenges without a
+  difficulty, fixed by the last change. The first call still took 88 s,
+  planning and writing 13 calls (about 9,000 output tokens), and it didn't read
+  an example, hence the example-first instruction. The two runs cost 0.036
+  credits. The difficulty default and example-first instruction are not yet
+  tried live.
+
+  Verified: typecheck, both builds, and all 215 tests pass.
 - Development and tests use local PostgreSQL or a Neon development branch, not the
   `production` branch.
 

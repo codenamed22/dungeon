@@ -189,6 +189,26 @@ function freshId(seed: DraftSeed, name: string): string {
   for (let n = 2; ; n += 1) if (!taken.has(`${base}-${n}`)) return `${base}-${n}`;
 }
 
+/**
+ * A new thing's ID: the one asked for, so that later calls can already refer
+ * to it, or else one made from its name.
+ */
+function newId(seed: DraftSeed, requested: string | undefined, name: string): string {
+  if (requested === undefined) return freshId(seed, name);
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(requested)) {
+    fail(`"${requested}" can't be an ID: use letters, digits, hyphens, and underscores, such as ${slugify(name)}.`);
+  }
+  if (takenIds(seed).has(requested)) fail(`The ID "${requested}" already belongs to ${nameOf(seed, requested)}.`);
+  return requested;
+}
+
+/** Refuses a new thing that lacks what it needs. Given an ID, the caller may have meant one that doesn't exist. */
+function incomplete(kind: string, id: string | undefined, needs: string): never {
+  return fail(id === undefined
+    ? `A new ${kind} needs ${needs}.`
+    : `There is no ${kind} with ID "${id}" to change, and a new ${kind} needs ${needs}.`);
+}
+
 function nameOf(seed: DraftSeed, id: string): string {
   return [...seed.locations, ...seed.items, ...seed.characters, ...seed.challenges, ...seed.threats ?? [], ...seed.endings ?? []]
     .find((entity) => entity.id === id)?.name ?? id;
@@ -284,7 +304,7 @@ export const setWorldInput = z.strictObject({
 });
 
 export const upsertPlaceInput = z.strictObject({
-  id: ref.optional().describe("ID of an existing place to change. Leave it out to add a new place."),
+  id: ref.optional().describe("ID of an existing place to change, or the ID to give a new one. Leave it out to make one from the name."),
   name: name.optional().describe("The place's name; required for a new place"),
   description: longText.optional().describe("What anyone there can see, in one to three sentences. No secrets. An empty string removes it."),
 });
@@ -306,7 +326,7 @@ export const disconnectPlacesInput = z.strictObject({
 });
 
 export const upsertItemInput = z.strictObject({
-  id: ref.optional().describe("ID of an existing item to change. Leave it out to add a new item."),
+  id: ref.optional().describe("ID of an existing item to change, or the ID to give a new one. Leave it out to make one from the name."),
   name: name.optional().describe("The item's name; required for a new item"),
   description: longText.optional().describe("What it looks like, briefly. An empty string removes it."),
 });
@@ -315,7 +335,7 @@ const modifierInput = (slot: string) => z.number().int().min(-5).max(10).optiona
   .describe(`In a world with stats, its ${slot} stat (the ${slot} name in statNames): -1 weak, 0 average, 3 strong, 5 exceptional`);
 
 export const upsertCharacterInput = z.strictObject({
-  id: ref.optional().describe("ID of an existing character to change. Leave it out to add a new one."),
+  id: ref.optional().describe("ID of an existing character to change, or the ID to give a new one. Leave it out to make one from the name."),
   name: name.optional().describe("Their name; required for a new character"),
   npc: z.boolean().optional().describe(
     "True for a supporting character the main characters meet, voiced by the game master; false for a main character (default)",
@@ -348,14 +368,15 @@ export const setPersonaInput = z.strictObject({
 });
 
 export const upsertChallengeInput = z.strictObject({
-  id: ref.optional().describe("ID of an existing challenge to change. Leave it out to add a new one."),
+  id: ref.optional().describe("ID of an existing challenge to change, or the ID to give a new one. Leave it out to make one from the name."),
   name: name.optional().describe("A short imperative name, e.g. \"Pry open the bars\"; required for a new challenge"),
   description: longText.optional().describe("What it looks like to those present. An empty string removes it."),
   placeId: ref.optional().describe("ID of the place it is in; required for a new challenge"),
   ability: abilitySchema.optional().describe(
     "The stat it leans on: strength, dexterity, or wisdom stand for the first, second, and third stats. Required for a new challenge in a world with stats.",
   ),
-  difficulty: difficultyBandSchema.optional().describe("How hard the check is; required for a new challenge"),
+  difficulty: difficultyBandSchema.optional()
+    .describe("How hard it is. With dice, the roll's target, required for a new challenge; with judgment, how strict the referee is, moderate if left out"),
   criteria: longText.optional().describe(
     "What it takes to succeed, for the referee in a judgment world, in checkable terms: what the character must have found out, "
       + "carry, or say. Only the referee and the director read it. An empty string removes it.",
@@ -373,7 +394,7 @@ export const upsertChallengeInput = z.strictObject({
 });
 
 export const upsertThreatInput = z.strictObject({
-  id: ref.optional().describe("ID of an existing threat to change. Leave it out to add a new one."),
+  id: ref.optional().describe("ID of an existing threat to change, or the ID to give a new one. Leave it out to make one from the name."),
   name: name.optional().describe("A short name for the director, e.g. \"The sluice opens\"; required for a new threat"),
   text: z.string().trim().min(1).max(500).optional().describe("What those it strikes notice when it happens; required for a new threat"),
   placeIds: z.array(ref).max(20).optional().describe("IDs of the places it strikes; an empty list means everywhere"),
@@ -393,7 +414,7 @@ export const upsertThreatInput = z.strictObject({
 });
 
 export const upsertEndingInput = z.strictObject({
-  id: ref.optional().describe("ID of an existing ending to change. Leave it out to add a new one."),
+  id: ref.optional().describe("ID of an existing ending to change, or the ID to give a new one. Leave it out to make one from the name."),
   name: name.optional().describe("A short name, e.g. \"Together\" or \"Full outage\"; required for a new ending"),
   text: z.string().trim().min(1).max(MAX_ENDING_LENGTH).optional().describe(
     "The closing text everyone reads when the story ends this way, in one to three sentences; required for a new ending",
@@ -482,16 +503,16 @@ function applyRules(seed: DraftSeed): string {
 export function upsertPlace(draft: Draft, raw: z.infer<typeof upsertPlaceInput>): OperationResult {
   const input = checked(upsertPlaceInput, raw);
   return edit(draft, ({ seed }) => {
-    if (input.id !== undefined) {
-      const existing = place(seed, input.id);
+    const existing = input.id === undefined ? undefined : seed.locations.find((location) => location.id === input.id);
+    if (existing) {
       if (input.name !== undefined) existing.name = input.name;
       setOptional(existing, "description", input.description);
       return `Updated place ${existing.name} (${existing.id}).`;
     }
-    if (input.name === undefined) fail("A new place needs a name.");
+    if (input.name === undefined) incomplete("place", input.id, "a name");
     if (seed.locations.length >= DRAFT_LIMITS.places) fail(`A world can have at most ${DRAFT_LIMITS.places} places.`);
     const created = parseInput(locationSchema, {
-      id: freshId(seed, input.name), name: input.name, routes: [], ...(input.description ? { description: input.description } : {}),
+      id: newId(seed, input.id, input.name), name: input.name, routes: [], ...(input.description ? { description: input.description } : {}),
     });
     seed.locations.push(created);
     return `Added place ${created.name} (${created.id}).`;
@@ -534,16 +555,16 @@ export function disconnectPlaces(draft: Draft, raw: z.infer<typeof disconnectPla
 export function upsertItem(draft: Draft, raw: z.infer<typeof upsertItemInput>): OperationResult {
   const input = checked(upsertItemInput, raw);
   return edit(draft, ({ seed }) => {
-    if (input.id !== undefined) {
-      const existing = seed.items.find((item) => item.id === input.id) ?? fail(`There is no item with ID "${input.id}".`);
+    const existing = input.id === undefined ? undefined : seed.items.find((item) => item.id === input.id);
+    if (existing) {
       if (input.name !== undefined) existing.name = input.name;
       setOptional(existing, "description", input.description);
       return `Updated item ${existing.name} (${existing.id}).`;
     }
-    if (input.name === undefined) fail("A new item needs a name.");
+    if (input.name === undefined) incomplete("item", input.id, "a name");
     if (seed.items.length >= DRAFT_LIMITS.items) fail(`A world can have at most ${DRAFT_LIMITS.items} items.`);
     const created = parseInput(itemSchema, {
-      id: freshId(seed, input.name), name: input.name, ...(input.description ? { description: input.description } : {}),
+      id: newId(seed, input.id, input.name), name: input.name, ...(input.description ? { description: input.description } : {}),
     });
     seed.items.push(created);
     return `Added item ${created.name} (${created.id}).`;
@@ -559,13 +580,12 @@ export function upsertCharacter(draft: Draft, raw: z.infer<typeof upsertCharacte
       [...new Set(input.itemIds)].map((itemId) => [itemId, input.itemIds!.filter((entry) => entry === itemId).length]),
     );
     let character = input.id === undefined ? undefined : seed.characters.find((entry) => entry.id === input.id);
-    if (input.id !== undefined && !character) fail(`There is no character with ID "${input.id}".`);
     const created = !character;
     if (!character) {
-      if (input.name === undefined || input.placeId === undefined) fail("A new character needs a name and a starting place.");
+      if (input.name === undefined || input.placeId === undefined) incomplete("character", input.id, "a name and a starting place");
       if (seed.characters.length >= DRAFT_LIMITS.characters) fail(`A world can have at most ${DRAFT_LIMITS.characters} characters.`);
       character = {
-        id: freshId(seed, input.name), name: input.name, locationId: input.placeId, hp: 10, maxHp: 10,
+        id: newId(seed, input.id, input.name), name: input.name, locationId: input.placeId, hp: 10, maxHp: 10,
         modifiers: { strength: 0, dexterity: 0, wisdom: 0 }, inventory: {},
       };
       seed.characters.push(character);
@@ -653,18 +673,19 @@ export function upsertChallenge(draft: Draft, raw: z.infer<typeof upsertChalleng
     const rules = rulesOf(seed);
     if (rules.health === null && input.failureDamage) fail("This world has no health, so a failure cannot hurt anyone.");
     let challenge = input.id === undefined ? undefined : seed.challenges.find((entry) => entry.id === input.id);
-    if (input.id !== undefined && !challenge) fail(`There is no challenge with ID "${input.id}".`);
     const created = !challenge;
     if (!challenge) {
-      // Without stats, the stat a challenge leans on never matters.
+      // Without stats, the stat a challenge leans on never matters. With judgment, the band only sets how strict the referee is.
       const ability = input.ability ?? (rules.stats === null ? "strength" : undefined);
-      if (input.name === undefined || input.placeId === undefined || !ability || !input.difficulty || input.minutes === undefined) {
-        fail(`A new challenge needs a name, a place, ${rules.stats ? "a stat, " : ""}a difficulty, and the minutes it takes.`);
+      const difficulty = input.difficulty ?? (rules.outcomes === "judgment" ? "moderate" : undefined);
+      if (input.name === undefined || input.placeId === undefined || !ability || !difficulty || input.minutes === undefined) {
+        incomplete("challenge", input.id,
+          `a name, a place, ${rules.stats ? "a stat, " : ""}${rules.outcomes === "judgment" ? "" : "a difficulty, "}and the minutes it takes`);
       }
       if (seed.challenges.length >= DRAFT_LIMITS.challenges) fail(`A world can have at most ${DRAFT_LIMITS.challenges} challenges.`);
       challenge = {
-        id: freshId(seed, input.name), name: input.name, locationId: input.placeId, ability,
-        difficulty: BAND_DIFFICULTY[input.difficulty], seconds: input.minutes * 60, failureDamage: 0, resolved: false,
+        id: newId(seed, input.id, input.name), name: input.name, locationId: input.placeId, ability,
+        difficulty: BAND_DIFFICULTY[difficulty], seconds: input.minutes * 60, failureDamage: 0, resolved: false,
       };
       seed.challenges.push(challenge);
     }
@@ -708,15 +729,14 @@ export function upsertThreat(draft: Draft, raw: z.infer<typeof upsertThreatInput
     if (rulesOf(seed).health === null && input.damage) fail("This world has no health, so a threat cannot hurt anyone.");
     const threats = seed.threats ?? [];
     let threat = input.id === undefined ? undefined : threats.find((entry) => entry.id === input.id);
-    if (input.id !== undefined && !threat) fail(`There is no threat with ID "${input.id}".`);
     const created = !threat;
     if (!threat) {
-      if (input.name === undefined || input.text === undefined) fail("A new threat needs a name and what people notice when it happens.");
+      if (input.name === undefined || input.text === undefined) incomplete("threat", input.id, "a name and what people notice when it happens");
       if (input.startsAtMinute === undefined && input.afterMinutes === undefined) {
         fail("Say when it happens: startsAtMinute for a set time, or afterMinutes once a challenge sets it off.");
       }
       if (threats.length >= DRAFT_LIMITS.threats) fail(`A world can have at most ${DRAFT_LIMITS.threats} threats.`);
-      threat = { id: freshId(seed, input.name), name: input.name, text: input.text, status: "waiting" };
+      threat = { id: newId(seed, input.id, input.name), name: input.name, text: input.text, status: "waiting" };
       threats.push(threat);
     }
     if (input.name !== undefined) threat.name = input.name;
@@ -758,17 +778,16 @@ export function upsertEnding(draft: Draft, raw: z.infer<typeof upsertEndingInput
     if (input.threatId !== undefined) requireThreat(seed, input.threatId);
     const endings = seed.endings ?? [];
     let ending = input.id === undefined ? undefined : endings.find((entry) => entry.id === input.id);
-    if (input.id !== undefined && !ending) fail(`There is no ending with ID "${input.id}".`);
     const created = !ending;
     const when = input.threatId !== undefined
       ? { threatId: input.threatId }
       : input.challengeId !== undefined ? { challengeId: input.challengeId, outcome: input.outcome ?? "success" } : undefined;
     if (!ending) {
       if (input.name === undefined || input.text === undefined || !when) {
-        fail("A new ending needs a name, its closing text, and the challenge or threat that ends the story.");
+        incomplete("ending", input.id, "a name, its closing text, and the challenge or threat that ends the story");
       }
       if (endings.length >= DRAFT_LIMITS.endings) fail(`A world can have at most ${DRAFT_LIMITS.endings} endings.`);
-      ending = { id: freshId(seed, input.name), name: input.name, text: input.text, when };
+      ending = { id: newId(seed, input.id, input.name), name: input.name, text: input.text, when };
       endings.push(ending);
     }
     if (input.name !== undefined) ending.name = input.name;

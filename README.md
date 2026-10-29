@@ -185,10 +185,19 @@ What you can do:
   market", "Set up a 3 a.m. outage for two engineers", "Add a character who
   lies", "Give it an ending", "What's missing?". It works through the same
   operations as the forms, as tool calls, so the draft changes in front of you
-  and every step is listed. Each message's changes can be undone while nothing
-  has changed since, and Stop keeps what it has done so far. A message is
-  limited to 8 model calls, 40 tool calls, and 0.50 credits (or 400,000 tokens
-  when the cost is not reported), and the panel shows what the draft has cost.
+  and every step is listed. The bundled stories are its examples: its
+  instructions list each one with its rules and pace, and it reads the closest
+  one in full (`get_example`) to see how a finished world is built, borrowing
+  the structure rather than the names or plot unless you ask for a copy or a
+  variation. It names new things itself, so it can add places and connect
+  them, or add a character and write their persona, in one step. Each
+  message's changes can be undone while nothing has changed since, and Stop
+  keeps what it has done so far. A message is limited to 16 model calls, 60
+  tool calls, and 0.50 credits (or 400,000 tokens when the cost is not
+  reported), and the panel shows what the draft has cost. What it says while
+  working shows as it goes; its reply is what it says when done. A message cut
+  off by a limit says so and has no reply, and the next message is told what
+  was and wasn't done.
   Pick any OpenRouter model that can call tools; the server's default is
   `DUNGEONS_CREATOR_MODEL` (see [Models](#models)).
 - **Premise.** Every AI is told the world's premise in its system prompt:
@@ -675,8 +684,9 @@ action comes first), every bundled story's
 validity,
 and the world creator: its operations, cascading removal, refusals, draft
 problems, that its code reaches nothing from Node (the browser runs it), its
-tool schemas, and the AI creator's loop against a simulated OpenRouter, with
-its limits and cancellation.
+tool schemas, the bundled stories as examples it can read, and the AI
+creator's loop against a simulated OpenRouter, with its limits and
+cancellation.
 Integration tests require `TEST_DATABASE_URL` and are skipped
 when it is absent. Use a dedicated test database or Neon test branch; the tests
 create uniquely named schemas and remove only those.
