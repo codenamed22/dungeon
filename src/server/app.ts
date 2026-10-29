@@ -455,6 +455,11 @@ export function createApp(options: AppOptions): (request: IncomingMessage, respo
 
   async function route(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const host = hostnameOf(request.headers.host);
+    // Platform health probes arrive with an internal host name and read nothing.
+    if (request.url === "/api/health" && (request.method === "GET" || request.method === "HEAD")) {
+      sendJson(response, 200, { ok: true });
+      return;
+    }
     if (host === null || !allowed.has(host)) throw new HttpError(403, "This server only answers on its own host names");
     const method = request.method ?? "GET";
     const url = new URL(request.url ?? "/", "http://localhost");

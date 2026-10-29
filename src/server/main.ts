@@ -56,7 +56,13 @@ const app = createApp({
   engine,
   runs,
   env: process.env,
-  allowedHosts: ["localhost", "127.0.0.1", "::1", ...(auth ? [auth.origin.hostname.replace(/^\[|\]$/g, "")] : [])],
+  allowedHosts: [
+    "localhost",
+    "127.0.0.1",
+    "::1",
+    ...(auth ? [auth.origin.hostname.replace(/^\[|\]$/g, "")] : []),
+    ...(auth && process.env.RENDER_EXTERNAL_HOSTNAME ? [process.env.RENDER_EXTERNAL_HOSTNAME] : []),
+  ],
   staticDir: path.resolve(import.meta.dirname, "../../web/dist"),
   auth,
 });
