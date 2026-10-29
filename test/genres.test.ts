@@ -239,9 +239,9 @@ test("worlds without health or stats refuse damage, wounds, and modifiers; endin
     [(seed: WorldSeed) => { seed.rulings!.maxFailureDamage = 2; }, "rules: Open-ended attempts may deal damage, but this world has no health"],
     [(seed: WorldSeed) => { seed.characters[0]!.modifiers.wisdom = 2; }, "character: priya has stats, but this world has none"],
     [(seed: WorldSeed) => { seed.endings![0]!.when = { challengeId: "nowhere", outcome: "success" }; },
-      "ending: Ending restored waits on a challenge or threat that does not exist"],
+      "ending: Ending restored waits on a challenge, threat, or threshold that does not exist"],
     [(seed: WorldSeed) => { seed.endings![1]!.when = { threatId: "nothing" }; },
-      "ending: Ending full-outage waits on a challenge or threat that does not exist"],
+      "ending: Ending full-outage waits on a challenge, threat, or threshold that does not exist"],
     [(seed: WorldSeed) => { seed.endings!.push({ ...seed.endings![0]!, id: "again" }); },
       "ending: Ending again waits on the same thing as restored, so it can never happen"],
   ] as const) {

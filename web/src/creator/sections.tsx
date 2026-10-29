@@ -3,7 +3,7 @@ import type { FormEvent, ReactNode } from "react";
 import { AlertTriangle, ChevronDown, CircleAlert, Plus, Sparkles, Trash2, X } from "lucide-react";
 import {
   bandOf, connectPlaces, disconnectPlaces, remove, setPersona, setWorld, upsertChallenge, upsertCharacter, upsertEnding, upsertItem,
-  upsertPlace, upsertThreat,
+  upsertPlace, upsertThreat, upsertTrack,
 } from "../../../src/creator/operations.ts";
 import type { OperationResult, removeKinds } from "../../../src/creator/operations.ts";
 import { rulesOf } from "../../../src/model.ts";
@@ -759,9 +759,197 @@ function ChallengeCard({ editor, draft, challenge, number, open, onToggle, onRem
             empty="No waiting threats." onChange={(next) => apply((current) => upsertChallenge(current, { id, failureArmsThreatIds: next }))} />
         </Field>
       </div>
+      {(seed.tracks ?? []).length > 0 && (
+        <div className="group">
+          <span className="eyebrow">Hidden tracks</span>
+          <Field label="Locked">
+            <label className="row"><input type="checkbox" checked={challenge.locked === true}
+              onChange={(event) => apply((current) => upsertChallenge(current, { id, locked: event.target.checked }))} />
+            <span className="field-hint">Nobody can attempt it, or see it, until a track threshold unlocks it.</span></label>
+          </Field>
+          {(seed.tracks ?? []).map((track) => {
+            const delta = (outcome: typeof success, trackId: string) => outcome.adjustTracks?.find((move) => move.trackId === trackId && !move.subjectId)?.delta ?? 0;
+            const moved = (outcome: typeof success, trackId: string, next: number) => [
+              ...(outcome.adjustTracks ?? []).filter((move) => !(move.trackId === trackId && !move.subjectId)),
+              ...(next === 0 ? [] : [{ trackId, delta: next }]),
+            ];
+            return (
+              <div key={track.id} className="form-grid">
+                <Field label={`${track.name} on success`}>
+                  <Stepper label={`${track.name} on success`} value={delta(success, track.id)} min={-track.max} max={track.max}
+                    onChange={(next) => apply((current) => upsertChallenge(current, { id, adjustsTracks: moved(success, track.id, next) }))} />
+                </Field>
+                <Field label={`${track.name} on failure`}>
+                  <Stepper label={`${track.name} on failure`} value={delta(failure, track.id)} min={-track.max} max={track.max}
+                    onChange={(next) => apply((current) => upsertChallenge(current, { id, failureAdjustsTracks: moved(failure, track.id, next) }))} />
+                </Field>
+              </div>
+            );
+          })}
+        </div>
+      )}
       <div className="card-actions">
         <span className="muted small">ID {id}</span>
         <RemoveButton label="challenge" onRemove={onRemove} />
+      </div>
+    </CardEditor>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
+export function TracksSection(props: SectionProps) {
+  const { editor, draft, focus } = props;
+  const { seed } = draft;
+  const cards = useOpenCard(focus);
+  const removeEntity = useRemove(props);
+  const tracks = seed.tracks ?? [];
+  return (
+    <>
+      <AddRow label="New track" placeholder="Add a hidden track, e.g. Trust"
+        onAdd={(name) => {
+          const outcome = editor.apply((current) => upsertTrack(current, { name, max: 10 }));
+          if (typeof outcome === "string") return outcome;
+          const known = new Set(tracks.map((track) => track.id));
+          const id = (outcome.draft.seed.tracks ?? []).find((track) => !known.has(track.id))?.id;
+          if (id) cards.show(id);
+          return null;
+        }} />
+      {tracks.length === 0 && (
+        <p className="muted">No hidden tracks. A track is a number per character that only the narrator, referee and you see. Challenges move it, and each threshold changes the world once reached.</p>
+      )}
+      <div className="editor-list">
+        {tracks.map((track, index) => (
+          <TrackCard key={track.id} {...props} track={track} number={index + 1}
+            open={cards.open === track.id} onToggle={() => cards.toggle(track.id)} onRemove={() => removeEntity("track", track.id)} />
+        ))}
+      </div>
+    </>
+  );
+}
+
+function TrackCard({ editor, draft, track, number, open, onToggle, onRemove }: SectionProps & {
+  track: NonNullable<Seed["tracks"]>[number];
+  number: number;
+  open: boolean;
+  onToggle(): void;
+  onRemove(): void;
+}) {
+  const { seed } = draft;
+  const apply = (edit: Edit) => refusal(editor.apply(edit));
+  const id = track.id;
+  const unlockable = seed.challenges.filter((challenge) => challenge.locked);
+  const waiting = (seed.threats ?? []).filter((threat) => threat.status === "waiting");
+  const routes = allRoutes(seed).filter((route) => route.locked);
+  const toInput = (threshold: (typeof track.thresholds)[number]) => ({
+    id: threshold.id, at: threshold.at,
+    ...(threshold.guidance ? { guidance: threshold.guidance } : {}),
+    ...(threshold.reveals ? { reveals: threshold.reveals } : {}),
+    ...(threshold.unlockChallenges ? { unlocksChallengeIds: threshold.unlockChallenges } : {}),
+    ...(threshold.unlockRoutes ? { unlocksRoutes: threshold.unlockRoutes.map((ref) => ({ fromId: ref.fromId, toId: ref.destinationId })) } : {}),
+    ...(threshold.lockRoutes ? { locksRoutes: threshold.lockRoutes.map((ref) => ({ fromId: ref.fromId, toId: ref.destinationId })) } : {}),
+    ...(threshold.armThreats ? { armsThreatIds: threshold.armThreats } : {}),
+    ...(threshold.disarmThreats ? { disarmsThreatIds: threshold.disarmThreats } : {}),
+    ...(threshold.adjustModifiers ? { modifiers: threshold.adjustModifiers } : {}),
+  });
+  const setThreshold = (index: number, change: Partial<ReturnType<typeof toInput>>) => apply((current) => upsertTrack(current, {
+    id, thresholds: track.thresholds.map((threshold, at) => (at === index ? { ...toInput(threshold), ...change } : toInput(threshold))),
+  }));
+  const key = (ref: { fromId: string; destinationId: string }) => `${ref.fromId}>${ref.destinationId}`;
+  const parts = (keys: string[]) => keys.map((entry) => {
+    const [fromId, toId] = entry.split(">") as [string, string];
+    return { fromId, toId };
+  });
+  return (
+    <CardEditor id={id} number={number} title={track.name} subtitle={`0 to ${track.max} · ${track.thresholds.length} threshold${track.thresholds.length === 1 ? "" : "s"}`}
+      open={open} onToggle={onToggle}>
+      <div className="form-grid">
+        <LiveText label="Name, for you" value={track.name} maxLength={200} commit={(name) => apply((current) => upsertTrack(current, { id, name }))} />
+        <Field label="Highest value">
+          <Stepper label="highest value" value={track.max} min={1} max={1000} onChange={(max) => apply((current) => upsertTrack(current, { id, max }))} />
+        </Field>
+      </div>
+      <LiveText label="What it measures" multiline rows={2} maxLength={2000} value={track.description ?? ""}
+        hint="Hidden: characters and players never see a track or its number."
+        commit={(description) => apply((current) => upsertTrack(current, { id, description }))} />
+      <Field label="Who has it, and where they start">
+        {seed.characters.length === 0 && <span className="field-hint">No characters yet.</span>}
+        {seed.characters.map((character) => {
+          const has = character.tracks?.[id] !== undefined;
+          return (
+            <div key={character.id} className="row wrap">
+              <label className="row"><input type="checkbox" checked={has}
+                onChange={(event) => apply((current) => {
+                  const values = { ...current.seed.characters.find((entry) => entry.id === character.id)?.tracks };
+                  if (event.target.checked) values[id] = 0;
+                  else delete values[id];
+                  return upsertCharacter(current, { id: character.id, trackValues: values });
+                })} />{character.name}</label>
+              {has && (
+                <Stepper label={`${character.name} starts at`} value={character.tracks![id]!} min={0} max={track.max}
+                  onChange={(next) => apply((current) => upsertCharacter(current, { id: character.id, trackValues: { ...character.tracks, [id]: next } }))} />
+              )}
+            </div>
+          );
+        })}
+      </Field>
+      <div className="group">
+        <span className="eyebrow">Thresholds: each happens once, the first time someone's value reaches it</span>
+        {track.thresholds.map((threshold, index) => (
+          <div key={threshold.id} className="group">
+            <div className="row wrap">
+              <Field label="At">
+                <Stepper label="threshold value" value={threshold.at} min={1} max={track.max} onChange={(at) => setThreshold(index, { at })} />
+              </Field>
+              <button type="button" className="text-button danger-text"
+                onClick={() => apply((current) => upsertTrack(current, { id, thresholds: track.thresholds.filter((_, at) => at !== index).map(toInput) }))}>
+                <Trash2 size={14} />Remove threshold
+              </button>
+            </div>
+            <LiveText label="Guidance for the narrator and referee" multiline rows={2} maxLength={600} value={threshold.guidance ?? ""}
+              hint="Only they and you read it, e.g. “She no longer hides her interest.”"
+              commit={(guidance) => apply((current) => upsertTrack(current, {
+                id, thresholds: track.thresholds.map((entry, at) => {
+                  const next = toInput(entry);
+                  if (at !== index) return next;
+                  const { guidance: _old, ...rest } = next;
+                  return guidance ? { ...rest, guidance } : rest;
+                }),
+              }))} />
+            <LiveText label="Reveals, only to that character" multiline rows={2} maxLength={2000} value={threshold.reveals ?? ""}
+              commit={(reveals) => apply((current) => upsertTrack(current, {
+                id, thresholds: track.thresholds.map((entry, at) => {
+                  const next = toInput(entry);
+                  if (at !== index) return next;
+                  const { reveals: _old, ...rest } = next;
+                  return reveals ? { ...rest, reveals } : rest;
+                }),
+              }))} />
+            <Field label="It unlocks">
+              <ChipChoice options={unlockable.map((challenge) => ({ value: challenge.id, label: challenge.name }))} chosen={threshold.unlockChallenges ?? []}
+                empty="No locked challenges. Lock one in Challenges." onChange={(next) => setThreshold(index, { unlocksChallengeIds: next })} />
+            </Field>
+            <Field label="It opens">
+              <ChipChoice options={routes.map((route) => ({ value: route.key, label: route.label }))} chosen={(threshold.unlockRoutes ?? []).map(key)}
+                empty="No blocked ways." onChange={(next) => setThreshold(index, { unlocksRoutes: parts(next) })} />
+            </Field>
+            <Field label="It sets off">
+              <ChipChoice options={waiting.map((threat) => ({ value: threat.id, label: threat.name }))} chosen={threshold.armThreats ?? []}
+                empty="No waiting threats." onChange={(next) => setThreshold(index, { armsThreatIds: next })} />
+            </Field>
+          </div>
+        ))}
+        <button type="button" className="text-button"
+          onClick={() => {
+            const at = Math.min(track.max, Math.max(0, ...track.thresholds.map((threshold) => threshold.at)) + 1);
+            apply((current) => upsertTrack(current, { id, thresholds: [...track.thresholds.map(toInput), { at }] }));
+          }}>
+          <Plus size={14} />Add a threshold
+        </button>
+      </div>
+      <div className="card-actions">
+        <span className="muted small">ID {id}</span>
+        <RemoveButton label="track" onRemove={onRemove} />
       </div>
     </CardEditor>
   );
@@ -890,10 +1078,11 @@ function ThreatCard({ editor, draft, threat, number, open, onToggle, onRemove }:
 /** "When X succeeds", "When Y happens": what an ending waits on, in words. */
 function triggerPhrase(seed: Seed, when: Ending["when"]): string {
   if ("threatId" in when) return `when "${nameIn(seed, when.threatId)}" happens`;
+  if ("trackId" in when) return `when "${when.thresholdId}" is reached on "${seed.tracks?.find((track) => track.id === when.trackId)?.name ?? when.trackId}"`;
   return `when "${nameIn(seed, when.challengeId)}" ${when.outcome === "success" ? "succeeds" : "fails"}`;
 }
 
-const triggerKey = (when: Ending["when"]) => ("threatId" in when ? `threat:${when.threatId}` : `${when.outcome}:${when.challengeId}`);
+const triggerKey = (when: Ending["when"]) => ("threatId" in when ? `threat:${when.threatId}` : "trackId" in when ? `track:${when.trackId}:${when.thresholdId}` : `${when.outcome}:${when.challengeId}`);
 
 export function EndingsSection(props: SectionProps) {
   const { editor, draft, focus } = props;
@@ -944,6 +1133,9 @@ function EndingCard({ editor, draft, ending, number, open, onToggle, onRemove }:
       { value: `failure:${challenge.id}`, label: `"${challenge.name}" fails` },
     ]),
     ...(seed.threats ?? []).map((threat) => ({ value: `threat:${threat.id}`, label: `"${threat.name}" happens` })),
+    ...(seed.tracks ?? []).flatMap((track) => track.thresholds.map((threshold) => ({
+      value: `track:${track.id}:${threshold.id}`, label: `Someone reaches ${threshold.at} on "${track.name}"`,
+    }))),
   ];
   const current = triggerKey(ending.when);
   const known = triggers.some((trigger) => trigger.value === current);
@@ -957,9 +1149,11 @@ function EndingCard({ editor, draft, ending, number, open, onToggle, onRemove }:
       <Field label="The story ends this way when">
         <select value={current} onChange={(event) => {
           const [kind, target] = event.target.value.split(/:(.*)/s) as [string, string];
+          const [trackId, thresholdId] = kind === "track" ? target.split(/:(.*)/s) as [string, string] : ["", ""];
           apply((draftNow) => upsertEnding(draftNow, kind === "threat"
             ? { id, threatId: target }
-            : { id, challengeId: target, outcome: kind === "failure" ? "failure" : "success" }));
+            : kind === "track" ? { id, trackId, thresholdId }
+              : { id, challengeId: target, outcome: kind === "failure" ? "failure" : "success" }));
         }}>
           {!known && <option value={current}>(choose what ends it)</option>}
           {triggers.map((trigger) => <option key={trigger.value} value={trigger.value}>{trigger.label}</option>)}

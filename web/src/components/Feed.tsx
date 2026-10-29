@@ -9,8 +9,8 @@ import type { EventView, WorldView } from "../types.ts";
 import { SheetDialog } from "../ui/Dialog.tsx";
 import { NARROW, useMedia } from "../ui/hooks.ts";
 
-const PRIVATE = new Set(["discovery", "belief_noted", "goal_set"]);
-const HIDDEN = new Set(["threat_armed", "threat_disarmed"]);
+const PRIVATE = new Set(["discovery", "insight", "belief_noted", "goal_set"]);
+const HIDDEN = new Set(["threat_armed", "threat_disarmed", "track_changed", "threshold_reached"]);
 /** The most words each kind of line may have, matching the engine's limits. */
 const LINE_LIMITS: Record<string, number> = { narration: 1000, utterance: 700, introduced: 2000 };
 

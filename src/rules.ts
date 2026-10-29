@@ -29,6 +29,8 @@ import type {
   NoteInput,
   RulingInput,
   Threat,
+  Threshold,
+  Track,
   WorldState,
 } from "./model.ts";
 
@@ -58,7 +60,7 @@ const NARRATABLE = new Set<EventData["type"]>([
 ]);
 
 /** Events nobody perceives: hidden consequences, the director's out-of-fiction steering, and wipes. */
-const HIDDEN = new Set<EventData["type"]>(["threat_armed", "threat_disarmed", "steering", "wiped"]);
+const HIDDEN = new Set<EventData["type"]>(["threat_armed", "threat_disarmed", "steering", "wiped", "track_changed", "threshold_reached"]);
 /** Someone coming into the scene or leaving it. */
 const STAGING = new Set<EventData["type"]>(["character_entered", "character_exited"]);
 /**
@@ -68,6 +70,7 @@ const STAGING = new Set<EventData["type"]>(["character_entered", "character_exit
  */
 const OUTCOME_PARTS = new Set<EventData["type"]>([
   "discovery", "threat_armed", "threat_disarmed", "story_ended", "character_entered", "character_exited",
+  "track_changed", "threshold_reached", "insight",
 ]);
 /** What may still happen once the story has ended: words about what already happened, and a wipe back to before it. */
 const AFTER_THE_END = new Set<EventData["type"]>(["narration", "retraction", "wiped"]);
@@ -75,7 +78,7 @@ const AFTER_THE_END = new Set<EventData["type"]>(["narration", "retraction", "wi
 /** Thoughts: a character's notes and goals, never a perception of the world. */
 export const MENTAL_EVENTS: readonly EventData["type"][] = ["belief_noted", "goal_set"];
 /** Events only their actor perceives: thoughts, and private discoveries. */
-export const PRIVATE_EVENTS: readonly EventData["type"][] = [...MENTAL_EVENTS, "discovery"];
+export const PRIVATE_EVENTS: readonly EventData["type"][] = [...MENTAL_EVENTS, "discovery", "insight"];
 
 /** An earlier event a belief cites, and who perceived it. */
 export interface Evidence {
@@ -315,11 +318,40 @@ function consequences(state: WorldState, challenge: Challenge, success: boolean)
 /** The ending an outcome reaches, if any: the first listed. */
 export function endingFor(
   state: WorldState,
-  trigger: { challengeId: string; success: boolean } | { threatId: string },
+  trigger: { challengeId: string; success: boolean } | { threatId: string } | { trackId: string; thresholdId: string },
 ): Ending | undefined {
-  return state.endings?.find(({ when }) => ("threatId" in trigger
-    ? "threatId" in when && when.threatId === trigger.threatId
-    : "challengeId" in when && when.challengeId === trigger.challengeId && (when.outcome === "success") === trigger.success));
+  return state.endings?.find(({ when }) => {
+    if ("threatId" in trigger) return "threatId" in when && when.threatId === trigger.threatId;
+    if ("trackId" in trigger) return "trackId" in when && when.trackId === trigger.trackId && when.thresholdId === trigger.thresholdId;
+    return "challengeId" in when && when.challengeId === trigger.challengeId && (when.outcome === "success") === trigger.success;
+  });
+}
+
+const reachedKey = (characterId: string, trackId: string, thresholdId: string) => `${characterId}:${trackId}:${thresholdId}`;
+const clampModifier = (value: number) => Math.min(20, Math.max(-10, value));
+type ThresholdData = Extract<EventData, { type: "threshold_reached" }>;
+
+/** What a character reaching a threshold does to the world, exactly as the track defines it and the world now stands. */
+function thresholdEvent(state: WorldState, characterId: string, track: Track, threshold: Threshold): ThresholdData {
+  const threats = state.threats ?? [];
+  return {
+    type: "threshold_reached",
+    characterId,
+    trackId: track.id,
+    thresholdId: threshold.id,
+    unlockedRoutes: structuredClone(threshold.unlockRoutes ?? []),
+    lockedRoutes: structuredClone(threshold.lockRoutes ?? []),
+    unlockedChallenges: state.challenges
+      .filter((challenge) => challenge.locked === true && threshold.unlockChallenges?.includes(challenge.id) === true)
+      .map((challenge) => challenge.id),
+    armedThreats: threats
+      .filter((threat) => threat.status === "waiting" && threshold.armThreats?.includes(threat.id) === true)
+      .map((threat) => ({ threatId: threat.id, at: state.elapsedSeconds + threat.delaySeconds! })),
+    disarmedThreats: threats
+      .filter((threat) => (threat.status === "armed" || threat.status === "waiting") && threshold.disarmThreats?.includes(threat.id) === true)
+      .map((threat) => threat.id),
+    modifiers: structuredClone(threshold.adjustModifiers ?? []),
+  };
 }
 
 export function isNpc(state: WorldState, characterId: string): boolean {
@@ -413,7 +445,7 @@ function rulingProblem(state: WorldState, actor: Character, data: RulingData): s
         return "A ruling on an existing challenge defines nothing";
       }
       if (!challenge || challenge.locationId !== actor.locationId) return `There is no challenge ${data.challengeId} here`;
-      return challenge.resolved ? `${challenge.id} is already resolved` : null;
+      return challenge.resolved ? `${challenge.id} is already resolved` : challenge.locked ? `${challenge.id} is not available yet` : null;
     }
     case "new": {
       const challenge = data.challenge;
@@ -424,6 +456,7 @@ function rulingProblem(state: WorldState, actor: Character, data: RulingData): s
       if (
         challenge.locationId !== actor.locationId || challenge.resolved || challenge.description !== undefined
         || challenge.requiresItemId !== undefined || challenge.criteria !== undefined || challenge.onSuccess !== undefined
+        || challenge.locked !== undefined || challenge.onFailure !== undefined
       ) {
         return "A ruled check takes place where the actor is, starts unresolved, and has no requirements or effects";
       }
@@ -507,6 +540,7 @@ function attemptable(state: WorldState, actor: Character, challengeId: string): 
   if (!challenge) invalid(`Unknown challenge: ${challengeId}`);
   if (challenge.locationId !== actor.locationId) invalid("Challenge is not in this location");
   if (challenge.resolved) invalid("Challenge is already resolved");
+  if (challenge.locked) invalid("Challenge is not available yet");
   if (challenge.requiresItemId !== undefined && quantity(actor.inventory, challenge.requiresItemId) === 0) {
     invalid(`${challenge.id} requires ${challenge.requiresItemId}, which ${actor.id} does not carry`);
   }
@@ -723,7 +757,35 @@ export function resolveCommand(
       append("character", { type: "discovery", actorId: data.actorId, challengeId: data.challengeId, text: reveals });
     }
     for (const consequence of consequences(current, challenge, data.success)) append("engine", consequence);
-    return endingFor(current, { challengeId: challenge.id, success: data.success });
+    const reached = moveTracks(data, challenge);
+    return endingFor(current, { challengeId: challenge.id, success: data.success }) ?? reached;
+  };
+  /**
+   * A check's pull on the tracks it names, and whatever each threshold it
+   * brings a character to then does. Returns the first ending a threshold reaches.
+   */
+  const moveTracks = (data: Extract<EventData, { type: "check_resolved" }>, challenge: Challenge): Ending | undefined => {
+    let ending: Ending | undefined;
+    for (const adjustment of (data.success ? challenge.onSuccess : challenge.onFailure)?.adjustTracks ?? []) {
+      const subject = current.characters.find((entry) => entry.id === (adjustment.subjectId ?? data.actorId));
+      const track = current.tracks?.find((entry) => entry.id === adjustment.trackId);
+      const before = subject?.tracks?.[adjustment.trackId];
+      if (!subject || !track || before === undefined) continue;
+      const value = Math.min(track.max, Math.max(0, before + adjustment.delta));
+      if (value === before) continue;
+      append("engine", {
+        type: "track_changed", characterId: subject.id, trackId: track.id, challengeId: challenge.id, delta: adjustment.delta, value,
+      });
+      for (const threshold of [...track.thresholds].sort((a, b) => a.at - b.at || (a.id < b.id ? -1 : 1))) {
+        if (value < threshold.at || current.reached?.includes(reachedKey(subject.id, track.id, threshold.id))) continue;
+        append("engine", thresholdEvent(current, subject.id, track, threshold));
+        if (threshold.reveals !== undefined && subject.hp > 0 && inScene(subject)) {
+          append("engine", { type: "insight", actorId: subject.id, trackId: track.id, thresholdId: threshold.id, text: threshold.reveals });
+        }
+        ending ??= endingFor(current, { trackId: track.id, thresholdId: threshold.id });
+      }
+    }
+    return ending;
   };
   if (command.role === "director") {
     const action = command.action;
@@ -876,6 +938,9 @@ function expectedSource(
     case "threat_armed":
     case "threat_disarmed":
     case "story_ended":
+    case "track_changed":
+    case "threshold_reached":
+    case "insight":
       return "engine";
     case "steering":
     case "introduced":
@@ -1032,7 +1097,7 @@ export function applyEvent(previous: WorldState | undefined, event: AdventureEve
         : data.reason === undefined && data.roll !== undefined && data.difficulty === challenge.difficulty
           && data.modifier === actor.modifiers[challenge.ability] && data.success === (data.roll + data.modifier >= challenge.difficulty));
       if (
-        !challenge || challenge.resolved || challenge.locationId !== actor.locationId
+        !challenge || challenge.resolved || challenge.locked || challenge.locationId !== actor.locationId
         || (challenge.requiresItemId !== undefined && quantity(actor.inventory, challenge.requiresItemId) === 0)
         || !outcomeFits
         || data.seconds !== challenge.seconds
@@ -1095,7 +1160,55 @@ export function applyEvent(previous: WorldState | undefined, event: AdventureEve
       if ("threatId" in when && state.threats?.find((threat) => threat.id === when.threatId)?.status !== "fired") {
         corrupt("An ending on a threat comes only once the threat has happened");
       }
+      if ("trackId" in when && !state.reached?.some((key) => key.endsWith(`:${when.trackId}:${when.thresholdId}`))) {
+        corrupt("An ending on a threshold comes only once someone has reached it");
+      }
       state.endedWith = ending.id;
+      break;
+    }
+    case "track_changed": {
+      const subject = state.characters.find((entry) => entry.id === data.characterId);
+      const track = state.tracks?.find((entry) => entry.id === data.trackId);
+      const before = subject?.tracks?.[data.trackId];
+      if (
+        !subject || !track || before === undefined || !state.challenges.some((entry) => entry.id === data.challengeId)
+        || data.delta === 0 || data.value === before || data.value !== Math.min(track.max, Math.max(0, before + data.delta))
+      ) {
+        corrupt("Track change contradicts the world rules");
+      }
+      subject.tracks![data.trackId] = data.value;
+      break;
+    }
+    case "threshold_reached": {
+      const subject = state.characters.find((entry) => entry.id === data.characterId);
+      const track = state.tracks?.find((entry) => entry.id === data.trackId);
+      const threshold = track?.thresholds.find((entry) => entry.id === data.thresholdId);
+      const key = reachedKey(data.characterId, data.trackId, data.thresholdId);
+      if (
+        !subject || !track || !threshold || (subject.tracks?.[track.id] ?? 0) < threshold.at || state.reached?.includes(key)
+        || canonicalJson(data) !== canonicalJson(thresholdEvent(state, subject.id, track, threshold))
+      ) {
+        corrupt("Threshold event contradicts the world rules");
+      }
+      setRoutes(state, data.unlockedRoutes, false);
+      setRoutes(state, data.lockedRoutes, true);
+      for (const challenge of state.challenges) if (data.unlockedChallenges.includes(challenge.id)) delete challenge.locked;
+      for (const { threatId, at } of data.armedThreats) {
+        const threat = storedThreat(state, threatId);
+        threat.status = "armed";
+        threat.at = at;
+      }
+      for (const threatId of data.disarmedThreats) storedThreat(state, threatId).status = "disarmed";
+      for (const { ability, delta } of data.modifiers) subject.modifiers[ability] = clampModifier(subject.modifiers[ability] + delta);
+      state.reached = [...state.reached ?? [], key];
+      break;
+    }
+    case "insight": {
+      storedActor(state, data.actorId);
+      const threshold = state.tracks?.find((entry) => entry.id === data.trackId)?.thresholds.find((entry) => entry.id === data.thresholdId);
+      if (!state.reached?.includes(reachedKey(data.actorId, data.trackId, data.thresholdId)) || threshold?.reveals !== data.text) {
+        corrupt("Insight does not match a threshold its holder reached");
+      }
       break;
     }
     case "character_entered": {
@@ -1266,14 +1379,44 @@ export class Replayer {
     if (STAGING.has(data.type) && event.source !== "director" && !this.staged(event)) {
       corrupt("An entrance or exit must follow the threat, ruling, or words that caused it");
     }
+    if (data.type === "track_changed") {
+      const check = this.lastCheck;
+      const outcome = check?.data.type === "check_resolved" ? check.data : undefined;
+      const challenge = this.state?.challenges.find((entry) => entry.id === data.challengeId);
+      const listed = outcome && (outcome.success ? challenge?.onSuccess : challenge?.onFailure)?.adjustTracks;
+      if (
+        !outcome || check?.requestId !== event.requestId || outcome.challengeId !== data.challengeId
+        || !listed?.some((entry) => entry.trackId === data.trackId && entry.delta === data.delta && (entry.subjectId ?? outcome.actorId) === data.characterId)
+      ) {
+        corrupt("A track change must follow the check that caused it");
+      }
+    }
+    if (data.type === "threshold_reached") {
+      const { characterId, trackId } = data;
+      const caused = this.requestBefore(event).some((other) => other.data.type === "track_changed"
+        && other.data.characterId === characterId && other.data.trackId === trackId);
+      if (!caused) corrupt("A threshold must follow the track change that reached it");
+    }
+    if (data.type === "insight") {
+      const last = this.requestBefore(event).at(-1)?.data;
+      if (last?.type !== "threshold_reached" || last.characterId !== data.actorId || last.trackId !== data.trackId || last.thresholdId !== data.thresholdId) {
+        corrupt("An insight must follow the threshold that taught it");
+      }
+    }
     if (data.type === "story_ended") {
       const when = this.state?.endings?.find((entry) => entry.id === data.endingId)?.when;
       const previous = this.causeOf(event);
       const check = this.lastCheck;
-      const caused = when !== undefined && ("threatId" in when
-        ? previous?.requestId === event.requestId && previous.data.type === "threat_triggered" && previous.data.threatId === when.threatId
-        : check?.requestId === event.requestId && check.data.type === "check_resolved"
-          && check.data.challengeId === when.challengeId && check.data.success === (when.outcome === "success"));
+      let caused = false;
+      if (when !== undefined && "threatId" in when) {
+        caused = previous?.requestId === event.requestId && previous.data.type === "threat_triggered" && previous.data.threatId === when.threatId;
+      } else if (when !== undefined && "trackId" in when) {
+        caused = this.requestBefore(event).some((other) => other.data.type === "threshold_reached"
+          && other.data.trackId === when.trackId && other.data.thresholdId === when.thresholdId);
+      } else if (when !== undefined) {
+        caused = check?.requestId === event.requestId && check.data.type === "check_resolved"
+          && check.data.challengeId === when.challengeId && check.data.success === (when.outcome === "success");
+      }
       if (!caused) corrupt("An ending must follow the outcome that reaches it");
     }
     // A wipe applies to the world as it was before its first event; nothing changes until the wipe itself checks out.
@@ -1333,6 +1476,17 @@ export class Replayer {
       }
     }
     return { state: fresh.state!, withdrawn: fresh.withdrawn, lastCheck: fresh.lastCheck, wiped };
+  }
+
+  /** The events of this event's request before it, oldest first. */
+  private requestBefore(event: AdventureEvent): AdventureEvent[] {
+    const earlier: AdventureEvent[] = [];
+    for (let sequence = event.sequence - 1; sequence > 1; sequence--) {
+      const previous = this.history.get(sequence)?.event;
+      if (previous?.requestId !== event.requestId) break;
+      earlier.unshift(previous);
+    }
+    return earlier;
   }
 
   /** The event before this one in its request, past any entrances and exits the engine staged in between. */

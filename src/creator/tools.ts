@@ -8,6 +8,7 @@ import {
   connectPlaces, connectPlacesInput, disconnectPlaces, disconnectPlacesInput, draftProblems, remove, removeInput, setPersona,
   setPersonaInput, setWorld, setWorldInput, upsertChallenge, upsertChallengeInput, upsertCharacter, upsertCharacterInput,
   upsertEnding, upsertEndingInput, upsertItem, upsertItemInput, upsertPlace, upsertPlaceInput, upsertThreat, upsertThreatInput,
+  upsertTrack, upsertTrackInput,
 } from "./operations.ts";
 import type { Draft, OperationResult } from "./operations.ts";
 import { buildStep, stepTools } from "./steps.ts";
@@ -86,7 +87,10 @@ const tools: readonly CreatorTool[] = [
     upsertThreatInput, upsertThreat),
   tool("upsert_ending", "Add a way the story can end, or change one: a challenge's success or failure, or a threat happening, "
     + "ends it with closing text everyone reads.", upsertEndingInput, upsertEnding),
-  tool("remove", "Remove a place, item, character, challenge, threat, ending, or persona, and every reference to it.", removeInput, remove),
+  tool("upsert_track", "Add a hidden track, a number per character that only the narrator, referee and director see, or change one. "
+    + "Challenges move it, and its thresholds change the world once reached: unlock challenges or ways, reveal a private fact, "
+    + "set threats off, change stats, or end the story.", upsertTrackInput, upsertTrack),
+  tool("remove", "Remove a place, item, character, challenge, threat, ending, track, or persona, and every reference to it.", removeInput, remove),
 ];
 
 const toolsByName = new Map(tools.map((entry) => [entry.name, entry]));

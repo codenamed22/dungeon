@@ -275,7 +275,11 @@ async function show(engine: AdventureEngine, worldId: string): Promise<void> {
   const endings = state.endings ?? [];
   if (endings.length > 0) console.log("\nEndings:");
   for (const entry of endings) {
-    const trigger = "threatId" in entry.when ? `when ${entry.when.threatId} fires` : `when ${entry.when.challengeId} ${entry.when.outcome === "success" ? "succeeds" : "fails"}`;
+    const trigger = "threatId" in entry.when
+      ? `when ${entry.when.threatId} fires`
+      : "trackId" in entry.when
+        ? `when someone reaches ${entry.when.thresholdId} on ${entry.when.trackId}`
+        : `when ${entry.when.challengeId} ${entry.when.outcome === "success" ? "succeeds" : "fails"}`;
     console.log(`  ${entry.name} (${entry.id}): ${trigger}`);
   }
 }

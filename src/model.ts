@@ -24,6 +24,7 @@ export const MAX_INTRODUCED_LENGTH = 2000;
 export const MAX_RETCON_LENGTH = 1000;
 export const MAX_CRITERIA_LENGTH = 2000;
 export const MAX_ENDING_LENGTH = 2000;
+export const MAX_TRACK_MAX = 1000;
 
 const id = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/);
 const count = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
@@ -122,9 +123,53 @@ export const characterSchema = z.strictObject({
   away: z.literal(true).optional(),
   /** Goals and commitments, in the order adopted; only the character perceives them. */
   goals: z.array(goalSchema).max(MAX_GOALS).optional(),
+  /** This character's value on each track they take part in (see trackSchema); nobody in the story sees it. */
+  tracks: z.record(id, count.max(MAX_TRACK_MAX)).optional(),
 });
 
 const threatIds = z.array(id).min(1).max(10);
+
+/** What a check does to a track: the actor's, or `subjectId`'s. */
+const trackAdjustment = z.strictObject({
+  trackId: id,
+  subjectId: id.optional(),
+  delta: z.number().int().min(-MAX_TRACK_MAX).max(MAX_TRACK_MAX).refine((delta) => delta !== 0, "A change must not be zero"),
+});
+const trackAdjustments = z.array(trackAdjustment).min(1).max(5);
+
+/**
+ * What happens the first time a character's value on a track reaches `at`:
+ * the world changes, and the narrator is told how to play it from then on.
+ */
+const thresholdSchema = z.strictObject({
+  id,
+  at: positiveCount.max(MAX_TRACK_MAX),
+  /** Guidance for the narrator, referee, and director once it is reached; the character never sees it. */
+  guidance: threatText.optional(),
+  unlockRoutes: z.array(routeRef).min(1).max(10).optional(),
+  lockRoutes: z.array(routeRef).min(1).max(10).optional(),
+  unlockChallenges: z.array(id).min(1).max(10).optional(),
+  /** A fact the character alone comes to know. */
+  reveals: z.string().trim().min(1).max(MAX_DISCOVERY_LENGTH).optional(),
+  armThreats: threatIds.optional(),
+  disarmThreats: threatIds.optional(),
+  /** A lasting change to the character's modifiers, kept within their limits. */
+  adjustModifiers: z.array(z.strictObject({
+    ability: abilitySchema,
+    delta: z.number().int().min(-10).max(10).refine((delta) => delta !== 0, "A change must not be zero"),
+  })).min(1).max(3).optional(),
+});
+export type Threshold = z.infer<typeof thresholdSchema>;
+
+/** A hidden measure that checks move for a character, from 0 up to `max`, with consequences at its thresholds. */
+export const trackSchema = z.strictObject({
+  id,
+  name: label,
+  description: description.optional(),
+  max: positiveCount.max(MAX_TRACK_MAX),
+  thresholds: z.array(thresholdSchema).max(10),
+});
+export type Track = z.infer<typeof trackSchema>;
 
 const challengeSchema = z.strictObject({
   id,
@@ -136,6 +181,8 @@ const challengeSchema = z.strictObject({
   seconds: taskSeconds,
   failureDamage: count.max(100),
   requiresItemId: id.optional(),
+  /** Out of reach until a track's threshold unlocks it. */
+  locked: z.literal(true).optional(),
   /** What it takes to succeed, for the referee in a judgment world. Only the referee and the director read it. */
   criteria: z.string().trim().min(1).max(MAX_CRITERIA_LENGTH).optional(),
   onSuccess: z.strictObject({
@@ -145,11 +192,13 @@ const challengeSchema = z.strictObject({
     reveals: z.string().trim().min(1).max(MAX_DISCOVERY_LENGTH).optional(),
     armThreats: threatIds.optional(),
     disarmThreats: threatIds.optional(),
+    adjustTracks: trackAdjustments.optional(),
   }).optional(),
   /** Consequences of failing: routes it blocks, and threats it sets in motion. */
   onFailure: z.strictObject({
     lockRoutes: z.array(routeRef).min(1).max(10).optional(),
     armThreats: threatIds.optional(),
+    adjustTracks: trackAdjustments.optional(),
   }).optional(),
   resolved: z.boolean(),
 });
@@ -189,6 +238,7 @@ const endingSchema = z.strictObject({
   when: z.union([
     z.strictObject({ challengeId: id, outcome: z.enum(["success", "failure"]) }),
     z.strictObject({ threatId: id }),
+    z.strictObject({ trackId: id, thresholdId: id }),
   ]),
 });
 export type Ending = z.infer<typeof endingSchema>;
@@ -226,6 +276,7 @@ export const worldSeedSchema = z.strictObject({
   /** Without limits, characters cannot attempt open-ended intentions. */
   rulings: rulingLimitsSchema.optional(),
   threats: z.array(threatSchema).max(50).optional(),
+  tracks: z.array(trackSchema).max(10).optional(),
   /** Dice, three abilities, and hit points when absent. */
   rules: worldRulesSchema.optional(),
   endings: z.array(endingSchema).max(20).optional(),
@@ -236,6 +287,8 @@ export const worldStateSchema = worldSeedSchema.extend({
   elapsedSeconds: count,
   /** The ending the story reached; after it, nothing more happens. */
   endedWith: id.optional(),
+  /** Thresholds already reached, as `characterId:trackId:thresholdId`; each happens once. */
+  reached: z.array(z.string()).optional(),
 });
 export type WorldSeed = z.infer<typeof worldSeedSchema>;
 export type WorldState = z.infer<typeof worldStateSchema>;
@@ -496,6 +549,30 @@ export const eventSchema = z.strictObject({
     z.strictObject({ type: z.literal("threat_disarmed"), threatId: id, challengeId: id }),
     /** The story reaching one of its endings. Everyone perceives it, and nothing happens after it. */
     z.strictObject({ type: z.literal("story_ended"), endingId: id }),
+    /** A check moving a character along a track: nobody perceives it. `delta` is what the check asked, `value` where the track stands after. */
+    z.strictObject({
+      type: z.literal("track_changed"),
+      characterId: id,
+      trackId: id,
+      challengeId: id,
+      delta: z.number().int(),
+      value: count,
+    }),
+    /** A character reaching a threshold: its consequences, exactly as the track defines them. Nobody perceives it. */
+    z.strictObject({
+      type: z.literal("threshold_reached"),
+      characterId: id,
+      trackId: id,
+      thresholdId: id,
+      unlockedRoutes: z.array(routeRef).max(10),
+      lockedRoutes: z.array(routeRef).max(10),
+      unlockedChallenges: z.array(id).max(10),
+      armedThreats: z.array(z.strictObject({ threatId: id, at: positiveCount })).max(10),
+      disarmedThreats: z.array(id).max(10),
+      modifiers: z.array(z.strictObject({ ability: abilitySchema, delta: z.number().int() })).max(3),
+    }),
+    /** What reaching a threshold taught the character; only they perceive it. */
+    z.strictObject({ type: z.literal("insight"), actorId: id, trackId: id, thresholdId: id, text: z.string().trim().min(1).max(MAX_DISCOVERY_LENGTH) }),
     /** The director's request to reconsider, outside the story. Nobody perceives it as an event. */
     z.strictObject({ type: z.literal("steering"), text: steeringText, targetId: id.optional() }),
     /** Something the director made happen in the world: perceived, and remembered, by those where it happens. */
@@ -650,7 +727,7 @@ export function canonicalJson(value: unknown): string {
 /** Something wrong with a world: what it is, and which part of the world it concerns. */
 export interface WorldProblem {
   message: string;
-  kind: "location" | "item" | "character" | "challenge" | "threat" | "ending" | "rules";
+  kind: "location" | "item" | "character" | "challenge" | "threat" | "ending" | "rules" | "track";
   id?: string;
 }
 
@@ -669,6 +746,7 @@ export function worldProblems(world: WorldSeed): WorldProblem[] {
     if (new Set(entities.map((entity) => entity.id)).size !== entities.length) add(label, `Duplicate ${label} ID`);
   }
   const locations = new Map(world.locations.map((location) => [location.id, location]));
+  const tracks = world.tracks ?? [];
   const items = new Set(world.items.map((item) => item.id));
   for (const location of world.locations) {
     const destinations = new Set<string>();
@@ -711,6 +789,41 @@ export function worldProblems(world: WorldSeed): WorldProblem[] {
     if (referenced.some((threatId) => !world.threats?.some((threat) => threat.id === threatId))) {
       add("challenge", `Unknown threat in the consequences of ${challenge.id}`, challenge.id);
     }
+    for (const adjustment of [...challenge.onSuccess?.adjustTracks ?? [], ...challenge.onFailure?.adjustTracks ?? []]) {
+      const subject = adjustment.subjectId === undefined ? undefined : world.characters.find((entry) => entry.id === adjustment.subjectId);
+      if (!tracks.some((track) => track.id === adjustment.trackId)
+        || (adjustment.subjectId !== undefined && (!subject || subject.tracks?.[adjustment.trackId] === undefined))) {
+        add("challenge", `${challenge.id} moves an unknown track, or one its subject does not have`, challenge.id);
+      }
+    }
+  }
+  if (new Set(tracks.map((track) => track.id)).size !== tracks.length) add("track", "Duplicate track ID");
+  for (const track of tracks) {
+    if (new Set(track.thresholds.map((threshold) => threshold.id)).size !== track.thresholds.length) {
+      add("track", `Duplicate threshold ID on track ${track.id}`, track.id);
+    }
+    for (const threshold of track.thresholds) {
+      const routes = [...threshold.unlockRoutes ?? [], ...threshold.lockRoutes ?? []];
+      if (threshold.at > track.max) add("track", `Threshold ${threshold.id} lies beyond the end of track ${track.id}`, track.id);
+      if (routes.some((ref) => !locations.get(ref.fromId)?.routes.some((entry) => entry.destinationId === ref.destinationId))) {
+        add("track", `Threshold ${threshold.id} changes an unknown route`, track.id);
+      }
+      if ((threshold.unlockChallenges ?? []).some((challengeId) => !world.challenges.some((challenge) => challenge.id === challengeId))) {
+        add("track", `Threshold ${threshold.id} unlocks an unknown challenge`, track.id);
+      }
+      if ([...threshold.armThreats ?? [], ...threshold.disarmThreats ?? []].some((threatId) => !world.threats?.some((threat) => threat.id === threatId))) {
+        add("track", `Threshold ${threshold.id} refers to an unknown threat`, track.id);
+      }
+      if (threshold.adjustModifiers !== undefined && rulesOf(world).stats === null) {
+        add("track", `Threshold ${threshold.id} changes modifiers, but this world has no stats`, track.id);
+      }
+    }
+  }
+  for (const character of world.characters) {
+    for (const [trackId, value] of Object.entries(character.tracks ?? {})) {
+      const track = tracks.find((entry) => entry.id === trackId);
+      if (!track || value > track.max) add("character", `${character.id} has an unknown track or a value beyond its end: ${trackId}`, character.id);
+    }
   }
   const threats = world.threats ?? [];
   if (new Set(threats.map((threat) => threat.id)).size !== threats.length) add("threat", "Duplicate threat ID");
@@ -744,12 +857,14 @@ export function worldProblems(world: WorldSeed): WorldProblem[] {
     const { when } = ending;
     const known = "threatId" in when
       ? threats.some((threat) => threat.id === when.threatId)
-      : world.challenges.some((challenge) => challenge.id === when.challengeId);
-    if (!known) add("ending", `Ending ${ending.id} waits on a challenge or threat that does not exist`, ending.id);
-    const trigger = "threatId" in when ? `threat ${when.threatId}` : `${when.challengeId} ${when.outcome}`;
-    const first = endings.find((other) => (
-      "threatId" in other.when ? `threat ${other.when.threatId}` : `${other.when.challengeId} ${other.when.outcome}`
-    ) === trigger);
+      : "trackId" in when
+        ? tracks.some((track) => track.id === when.trackId && track.thresholds.some((threshold) => threshold.id === when.thresholdId))
+        : world.challenges.some((challenge) => challenge.id === when.challengeId);
+    if (!known) add("ending", `Ending ${ending.id} waits on a challenge, threat, or threshold that does not exist`, ending.id);
+    const triggerOf = (condition: Ending["when"]) => ("threatId" in condition
+      ? `threat ${condition.threatId}`
+      : "trackId" in condition ? `track ${condition.trackId} ${condition.thresholdId}` : `${condition.challengeId} ${condition.outcome}`);
+    const first = endings.find((other) => triggerOf(other.when) === triggerOf(when));
     if (first !== ending) add("ending", `Ending ${ending.id} waits on the same thing as ${first!.id}, so it can never happen`, ending.id);
   }
   const rules = rulesOf(world);

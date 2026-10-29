@@ -101,7 +101,9 @@ export function WorldPanel({ view }: { view: WorldView }) {
                 <span className="muted grow right">
                   {"threatId" in ending.when
                     ? `when ${nameOf(state, ending.when.threatId)} happens`
-                    : `when ${nameOf(state, ending.when.challengeId)} ${ending.when.outcome === "success" ? "succeeds" : "fails"}`}
+                    : "trackId" in ending.when
+                      ? `when ${ending.when.thresholdId} is reached on ${nameOf(state, ending.when.trackId)}`
+                      : `when ${nameOf(state, ending.when.challengeId)} ${ending.when.outcome === "success" ? "succeeds" : "fails"}`}
                 </span>
               </div>
               <div>{ending.text}</div>

@@ -44,7 +44,7 @@ export const BUILD_STEPS: readonly BuildStep[] = [
     id: "challenges",
     label: "Challenges",
     task: "Add the threats, then the challenges that refer to them, and block or open ways as they need.",
-    tools: ["upsert_threat", "upsert_challenge", "upsert_item", "connect_places"],
+    tools: ["upsert_threat", "upsert_challenge", "upsert_item", "connect_places", "upsert_track"],
   },
   {
     id: "endings",

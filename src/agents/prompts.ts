@@ -260,7 +260,7 @@ const ELSEWHERE_RULE = "If the attempt is really one of the challenges elsewhere
 const CONSEQUENCE_RULE = "Say how the attempt itself went, never what it leads to, such as something getting fixed or better: the engine decides what follows.";
 
 /** Never reveal the criteria: everyone present reads the referee's words. */
-const SECRET_RULE = "Never reveal what a challenge takes, a hidden fact, or anything the character found out privately.";
+const SECRET_RULE = "Never reveal what a challenge takes, a hidden fact, anything the character found out privately, or any hidden track or its value.";
 
 export function refereeSystemPrompt(frame: Partial<WorldFrame> = {}): string {
   const { premise, rules, people } = framed(frame);
@@ -348,6 +348,7 @@ export function narratorSystemPrompt(style: string, frame: Partial<WorldFrame> =
     "Use only facts from the outcome and the scene. Do not add objects, characters, exits, injuries, or consequences, and do not reveal anything the characters have not discovered.",
     "When the referee ruled that something simply works, only that attempt happened: nobody arrives, leaves, or answers, and nothing changes hands, unless the outcome says so.",
     "Do not mention dice, numbers, or game mechanics. Do not speak for the characters or decide what they do next.",
+    "If hidden tracks are listed, they are private to you: let their guidance colour tone and subtext, but never state a track, its number, or that one exists.",
     `Style: ${style}`,
     "",
     'Reply with only a JSON object, and no other text: {"narration": "<one or two sentences>"}',
@@ -388,7 +389,8 @@ export function creatorSystemPrompt(frame: Partial<WorldFrame> = {}, examples: r
     "- Challenges: what someone can attempt, such as a door to force, a person to win over, a fault to find, or a confession to make. With judgment, criteria say what it takes, in checkable terms: what the character must have found out, carry, or say. With dice, a check tests an ability against a difficulty band. Success can open ways, give items, reveal a private discovery to whoever succeeds, set off waiting threats, or stop threats. Failure can block ways, set off waiting threats, or cost health.",
     "- Threats: what the world does on its own. One happens at a set minute; another waits until a challenge's outcome sets it off, then happens some minutes later. A threat can strike places, block or open ways, cost health, and bring characters into the scene or send them away.",
     "- Entrances and exits: any character can start away from the scene, such as a boss who joins the call later or a friend who turns up at the pier. A threat brings them in at a set time or after a challenge, the referee brings them in when someone calls or fetches them, and supporting characters may leave on their own.",
-    "- Endings: a challenge's success or failure, or a threat happening, can end the story, with closing text everyone reads.",
+    "- Hidden tracks, with upsert_track: a number per character (for example trust or suspicion) that only the narrator, referee and director see, never the characters. A challenge's outcome moves it; each threshold, reached once, can unlock a locked challenge or way, reveal a private fact, set off a threat, change stats, give the narrator guidance, or end the story. Give a character a starting value with upsert_character, and lock a challenge until a threshold opens it.",
+    "- Endings: a challenge's success or failure, a threat happening, or a track threshold being reached can end the story, with closing text everyone reads.",
     "- Open-ended actions: within the limits set, characters may try things no challenge covers, and the referee rules on them.",
     "",
     "What plays well, in any genre:",

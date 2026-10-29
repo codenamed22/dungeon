@@ -3,7 +3,7 @@ import { modelSetupSchema } from "../agents/models.ts";
 import { castProblems, castSchema, MAX_NARRATOR_STYLE_LENGTH, MAX_PREMISE_LENGTH, npcPersonaSchema, paceSchema, personaSchema } from "../agents/prompts.ts";
 import type { Cast } from "../agents/prompts.ts";
 import {
-  abilitySchema, BAND_DIFFICULTY, difficultyBandSchema, EngineError, MAX_ENDING_LENGTH, MAX_THREAT_LENGTH, parseInput, rulesOf, worldProblems,
+  abilitySchema, BAND_DIFFICULTY, difficultyBandSchema, EngineError, MAX_ENDING_LENGTH, MAX_THREAT_LENGTH, parseInput, rulesOf, trackSchema, worldProblems,
   worldSeedSchema,
 } from "../model.ts";
 import type { DifficultyBand, WorldRules, WorldSeed } from "../model.ts";
@@ -21,7 +21,7 @@ const challengeSchema = seedShape.challenges.element;
 const threatSchema = seedShape.threats.unwrap().element;
 const endingSchema = seedShape.endings.unwrap().element;
 
-export const DRAFT_LIMITS = { places: 30, items: 50, characters: 20, challenges: 30, threats: 20, endings: 10 } as const;
+export const DRAFT_LIMITS = { places: 30, items: 50, characters: 20, challenges: 30, threats: 20, endings: 10, tracks: 10 } as const;
 
 /** A world being written: possibly incomplete, so it may have no places or characters yet. */
 export const draftSeedSchema = worldSeedSchema.extend({
@@ -59,7 +59,7 @@ export function blankDraft(name = "Untitled world"): Draft {
 // ---------------------------------------------------------------------------
 // Problems
 
-export type DraftSection = "story" | "places" | "characters" | "items" | "challenges" | "threats" | "endings";
+export type DraftSection = "story" | "places" | "characters" | "items" | "challenges" | "threats" | "endings" | "tracks";
 
 export interface DraftProblem {
   /** Errors stop the world being created; warnings do not. */
@@ -70,7 +70,7 @@ export interface DraftProblem {
 }
 
 const SECTION_BY_KIND = {
-  location: "places", item: "items", character: "characters", challenge: "challenges", threat: "threats", ending: "endings", rules: "story",
+  location: "places", item: "items", character: "characters", challenge: "challenges", threat: "threats", ending: "endings", rules: "story", track: "tracks",
 } as const satisfies Record<string, DraftSection>;
 
 /** Everything that stops a draft becoming a world, then what would make it play better. */
@@ -227,8 +227,16 @@ function incomplete(kind: string, id: string | undefined, needs: string): never 
 }
 
 function nameOf(seed: DraftSeed, id: string): string {
-  return [...seed.locations, ...seed.items, ...seed.characters, ...seed.challenges, ...seed.threats ?? [], ...seed.endings ?? []]
+  return [...seed.locations, ...seed.items, ...seed.characters, ...seed.challenges, ...seed.threats ?? [], ...seed.endings ?? [], ...seed.tracks ?? []]
     .find((entity) => entity.id === id)?.name ?? id;
+}
+
+function requireTrack(seed: DraftSeed, id: string) {
+  return seed.tracks?.find((track) => track.id === id) ?? fail(`There is no track with ID "${id}".`);
+}
+
+function requireChallenge(seed: DraftSeed, id: string) {
+  return seed.challenges.find((challenge) => challenge.id === id) ?? fail(`There is no challenge with ID "${id}".`);
 }
 
 function place(seed: DraftSeed, id: string, what = "place") {
@@ -287,6 +295,12 @@ const routeInput = z.strictObject({
   toId: ref.describe("ID of the place it leads to"),
 });
 const lines = (max: number, what: string) => z.array(z.string().trim().min(1).max(600)).max(max).describe(what);
+const trackMove = z.strictObject({
+  trackId: ref.describe("ID of the track"),
+  delta: z.number().int().min(-1000).max(1000).refine((delta) => delta !== 0, "A change must not be zero")
+    .describe("How much to add to the value; negative lowers it"),
+  subjectId: ref.optional().describe("ID of the character whose value moves; leave out for whoever attempts the challenge"),
+});
 
 const ruleName = z.string().trim().min(1).max(30);
 
@@ -368,6 +382,10 @@ export const upsertCharacterInput = z.strictObject({
   dexterity: modifierInput("second"),
   wisdom: modifierInput("third"),
   itemIds: z.array(ref).max(20).optional().describe("IDs of the items they carry, replacing what they carried; repeat an ID to carry more than one"),
+  trackValues: z.record(ref, z.number().int().min(0).max(1000)).optional().describe(
+    "Hidden tracks they take part in, as track ID to starting value, replacing the earlier set; {} for none. "
+    + "Only characters listed here are moved by a track.",
+  ),
 });
 
 export const setPersonaInput = z.strictObject({
@@ -408,6 +426,11 @@ export const upsertChallengeInput = z.strictObject({
   disarmsThreatIds: z.array(ref).max(10).optional().describe("Threats that success stops"),
   failureBlocksRoutes: z.array(routeInput).max(10).optional().describe("Ways that a failed attempt blocks"),
   failureArmsThreatIds: z.array(ref).max(10).optional().describe("Waiting threats that a failed attempt sets in motion"),
+  locked: z.boolean().optional().describe(
+    "True if it cannot be attempted, or seen by characters, until a track's threshold unlocks it. False to make it available (default).",
+  ),
+  adjustsTracks: z.array(trackMove).max(5).optional().describe("Hidden track changes when it succeeds, replacing the earlier list; [] for none"),
+  failureAdjustsTracks: z.array(trackMove).max(5).optional().describe("Hidden track changes when it fails, replacing the earlier list; [] for none"),
 });
 
 export const upsertThreatInput = z.strictObject({
@@ -438,10 +461,42 @@ export const upsertEndingInput = z.strictObject({
   ),
   challengeId: ref.optional().describe("End the story when this challenge succeeds or fails (see outcome). Give this or threatId."),
   outcome: z.enum(["success", "failure"]).optional().describe("With challengeId: whether its success or its failure ends the story (default success)"),
-  threatId: ref.optional().describe("End the story when this threat happens. Give this or challengeId."),
+  threatId: ref.optional().describe("End the story when this threat happens. Give this or challengeId or trackId."),
+  trackId: ref.optional().describe("End the story when a character reaches thresholdId on this track. Give this with thresholdId."),
+  thresholdId: ref.optional().describe("With trackId: the ID of the threshold that ends the story"),
 });
 
-export const removeKinds = ["place", "item", "character", "challenge", "threat", "ending", "persona"] as const;
+const thresholdInput = z.strictObject({
+  id: ref.optional().describe("ID of the threshold; kept if it already exists, otherwise made from its level"),
+  at: z.number().int().min(1).max(1000).describe("The value at which it happens, once, the first time a character's value reaches it"),
+  guidance: z.string().trim().min(1).max(MAX_THREAT_LENGTH).optional().describe(
+    "What the narrator and referee should do from then on, in a sentence, e.g. \"She no longer hides her interest.\" "
+    + "Only they and the director read it; characters never do.",
+  ),
+  unlocksChallengeIds: z.array(ref).max(10).optional().describe("Locked challenges it makes available"),
+  unlocksRoutes: z.array(routeInput).max(10).optional().describe("Blocked ways it opens"),
+  locksRoutes: z.array(routeInput).max(10).optional().describe("Ways it blocks"),
+  reveals: longText.optional().describe("A private discovery that only that character learns"),
+  armsThreatIds: z.array(ref).max(10).optional().describe("Waiting threats it sets in motion"),
+  disarmsThreatIds: z.array(ref).max(10).optional().describe("Threats it stops"),
+  modifiers: z.array(z.strictObject({
+    ability: abilitySchema,
+    delta: z.number().int().min(-10).max(10).refine((delta) => delta !== 0, "A change must not be zero"),
+  })).max(3).optional().describe("A lasting change to that character's stats (needs a world with stats)"),
+});
+
+export const upsertTrackInput = z.strictObject({
+  id: ref.optional().describe("ID of an existing track to change, or the ID to give a new one. Leave it out to make one from the name."),
+  name: name.optional().describe("A short name for the director, e.g. \"Trust\"; required for a new track"),
+  description: longText.optional().describe("What it measures, for the director. An empty string removes it."),
+  max: z.number().int().min(1).max(1000).optional().describe("The highest value; required for a new track"),
+  thresholds: z.array(thresholdInput).max(10).optional().describe(
+    "The levels at which things happen, replacing the earlier list; [] for none. A hidden track is never shown to characters or players. "
+    + "Give characters a starting value with upsert_character, and move it with a challenge's adjustsTracks.",
+  ),
+});
+
+export const removeKinds = ["place", "item", "character", "challenge", "threat", "ending", "persona", "track"] as const;
 export const removeInput = z.strictObject({
   kind: z.enum(removeKinds).describe("What to remove. \"persona\" removes only a character's persona, so no agent plays them."),
   id: ref.describe("Its ID"),
@@ -626,6 +681,11 @@ export function upsertCharacter(draft: Draft, raw: z.infer<typeof upsertCharacte
       character.modifiers[ability] = input[ability];
     }
     if (inventory) character.inventory = inventory;
+    if (input.trackValues) {
+      for (const trackId of Object.keys(input.trackValues)) requireTrack(seed, trackId);
+      if (Object.keys(input.trackValues).length === 0) delete character.tracks;
+      else character.tracks = input.trackValues;
+    }
     parseInput(characterSchema, character);
     // A persona of the wrong kind cannot carry over between main and supporting characters.
     if (wasNpc !== (character.npc === true)) {
@@ -687,6 +747,10 @@ export function upsertChallenge(draft: Draft, raw: z.infer<typeof upsertChalleng
       if (threat.status !== "waiting") fail(`"${threat.name}" already happens on its own clock; only a waiting threat can be set off.`);
     }
     for (const threatId of input.disarmsThreatIds ?? []) requireThreat(seed, threatId);
+    for (const move of [...input.adjustsTracks ?? [], ...input.failureAdjustsTracks ?? []]) {
+      requireTrack(seed, move.trackId);
+      if (move.subjectId !== undefined) requireCharacter(seed, move.subjectId);
+    }
     const rules = rulesOf(seed);
     if (rules.health === null && input.failureDamage) fail("This world has no health, so a failure cannot hurt anyone.");
     let challenge = input.id === undefined ? undefined : seed.challenges.find((entry) => entry.id === input.id);
@@ -721,11 +785,14 @@ export function upsertChallenge(draft: Draft, raw: z.infer<typeof upsertChalleng
     setOptional(success, "reveals", input.reveals);
     if (input.armsThreatIds) setOptional(success, "armThreats", [...new Set(input.armsThreatIds)]);
     if (input.disarmsThreatIds) setOptional(success, "disarmThreats", [...new Set(input.disarmsThreatIds)]);
+    if (input.adjustsTracks) setOptional(success, "adjustTracks", input.adjustsTracks);
     setOptional(challenge, "onSuccess", Object.keys(success).length > 0 ? success : null);
     const failure = challenge.onFailure ?? {};
     if (input.failureBlocksRoutes) setOptional(failure, "lockRoutes", routeRefs(seed, input.failureBlocksRoutes));
     if (input.failureArmsThreatIds) setOptional(failure, "armThreats", [...new Set(input.failureArmsThreatIds)]);
+    if (input.failureAdjustsTracks) setOptional(failure, "adjustTracks", input.failureAdjustsTracks);
     setOptional(challenge, "onFailure", Object.keys(failure).length > 0 ? failure : null);
+    if (input.locked !== undefined) setOptional(challenge, "locked", input.locked || null);
     parseInput(challengeSchema, challenge);
     return `${created ? "Added" : "Updated"} challenge "${challenge.name}" (${challenge.id}) at ${nameOf(seed, challenge.locationId)}.`;
   });
@@ -787,7 +854,14 @@ export function upsertEnding(draft: Draft, raw: z.infer<typeof upsertEndingInput
   const input = checked(upsertEndingInput, raw);
   return edit(draft, ({ seed }) => {
     if (input.challengeId !== undefined && input.threatId !== undefined) {
-      fail("An ending waits on a challenge or on a threat: give challengeId or threatId, not both.");
+      fail("An ending waits on a challenge, a threat, or a track threshold: give only one, not both.");
+    }
+    if ((input.trackId !== undefined) !== (input.thresholdId !== undefined)) fail("Give trackId and thresholdId together.");
+    if (input.trackId !== undefined && (input.challengeId !== undefined || input.threatId !== undefined)) {
+      fail("An ending waits on a challenge, a threat, or a track threshold: give only one, not both.");
+    }
+    if (input.trackId !== undefined && !requireTrack(seed, input.trackId).thresholds.some((threshold) => threshold.id === input.thresholdId)) {
+      fail(`Track "${input.trackId}" has no threshold with ID "${input.thresholdId}".`);
     }
     if (input.challengeId !== undefined && !seed.challenges.some((challenge) => challenge.id === input.challengeId)) {
       fail(`There is no challenge with ID "${input.challengeId}".`);
@@ -798,10 +872,11 @@ export function upsertEnding(draft: Draft, raw: z.infer<typeof upsertEndingInput
     const created = !ending;
     const when = input.threatId !== undefined
       ? { threatId: input.threatId }
-      : input.challengeId !== undefined ? { challengeId: input.challengeId, outcome: input.outcome ?? "success" } : undefined;
+      : input.trackId !== undefined ? { trackId: input.trackId, thresholdId: input.thresholdId! }
+        : input.challengeId !== undefined ? { challengeId: input.challengeId, outcome: input.outcome ?? "success" } : undefined;
     if (!ending) {
       if (input.name === undefined || input.text === undefined || !when) {
-        incomplete("ending", input.id, "a name, its closing text, and the challenge or threat that ends the story");
+        incomplete("ending", input.id, "a name, its closing text, and the challenge, threat, or track threshold that ends the story");
       }
       if (endings.length >= DRAFT_LIMITS.endings) fail(`A world can have at most ${DRAFT_LIMITS.endings} endings.`);
       ending = { id: newId(seed, input.id, input.name), name: input.name, text: input.text, when };
@@ -815,14 +890,68 @@ export function upsertEnding(draft: Draft, raw: z.infer<typeof upsertEndingInput
     seed.endings = endings;
     const trigger = "threatId" in ending.when
       ? `when "${nameOf(seed, ending.when.threatId)}" happens`
-      : `when "${nameOf(seed, ending.when.challengeId)}" ${ending.when.outcome === "success" ? "succeeds" : "fails"}`;
+      : "trackId" in ending.when
+        ? `when someone reaches "${ending.when.thresholdId}" on "${nameOf(seed, ending.when.trackId)}"`
+        : `when "${nameOf(seed, ending.when.challengeId)}" ${ending.when.outcome === "success" ? "succeeds" : "fails"}`;
     return `${created ? "Added" : "Updated"} ending "${ending.name}" (${ending.id}), ${trigger}.`;
   });
 }
 
-/** Removes endings that wait on the given challenge or threat. */
+export function upsertTrack(draft: Draft, raw: z.infer<typeof upsertTrackInput>): OperationResult {
+  const input = checked(upsertTrackInput, raw);
+  return edit(draft, ({ seed }) => {
+    let track = input.id === undefined ? undefined : seed.tracks?.find((entry) => entry.id === input.id);
+    const created = !track;
+    if (!track) {
+      if (input.name === undefined || input.max === undefined) incomplete("track", input.id, "a name and its highest value");
+      if ((seed.tracks?.length ?? 0) >= DRAFT_LIMITS.tracks) fail(`A world can have at most ${DRAFT_LIMITS.tracks} tracks.`);
+      track = { id: newId(seed, input.id, input.name), name: input.name, max: input.max, thresholds: [] };
+      seed.tracks = [...seed.tracks ?? [], track];
+    }
+    if (input.name !== undefined) track.name = input.name;
+    setOptional(track, "description", input.description);
+    if (input.max !== undefined) track.max = input.max;
+    if (input.thresholds) {
+      const before = track.thresholds.map((threshold) => threshold.id);
+      track.thresholds = input.thresholds.map((entry) => {
+        for (const challengeId of entry.unlocksChallengeIds ?? []) {
+          if (!requireChallenge(seed, challengeId).locked) fail(`"${nameOf(seed, challengeId)}" is not locked, so there is nothing to unlock. Lock it with upsert_challenge first.`);
+        }
+        for (const threatId of [...entry.armsThreatIds ?? [], ...entry.disarmsThreatIds ?? []]) requireThreat(seed, threatId);
+        const threshold: (typeof track.thresholds)[number] = { id: entry.id ?? `level-${entry.at}`, at: entry.at };
+        setOptional(threshold, "guidance", entry.guidance);
+        setOptional(threshold, "unlockChallenges", entry.unlocksChallengeIds && [...new Set(entry.unlocksChallengeIds)]);
+        if (entry.unlocksRoutes) setOptional(threshold, "unlockRoutes", routeRefs(seed, entry.unlocksRoutes));
+        if (entry.locksRoutes) setOptional(threshold, "lockRoutes", routeRefs(seed, entry.locksRoutes));
+        setOptional(threshold, "reveals", entry.reveals);
+        setOptional(threshold, "armThreats", entry.armsThreatIds && [...new Set(entry.armsThreatIds)]);
+        setOptional(threshold, "disarmThreats", entry.disarmsThreatIds && [...new Set(entry.disarmsThreatIds)]);
+        setOptional(threshold, "adjustModifiers", entry.modifiers);
+        return threshold;
+      });
+      const kept = new Set(track.thresholds.map((threshold) => threshold.id));
+      const gone = before.filter((id) => !kept.has(id));
+      const trackId = track.id;
+      if (gone.length > 0 && seed.endings) {
+        seed.endings = seed.endings.filter((ending) => !("trackId" in ending.when && ending.when.trackId === trackId && gone.includes(ending.when.thresholdId)));
+        if (seed.endings.length === 0) delete seed.endings;
+      }
+    }
+    const high = track.thresholds.find((threshold) => threshold.at > track.max);
+    if (high) fail(`Threshold "${high.id}" is at ${high.at}, above the highest value, ${track.max}.`);
+    const trackId = track.id;
+    for (const character of seed.characters) {
+      const value = character.tracks?.[trackId];
+      if (value !== undefined && value > track.max) character.tracks![trackId] = track.max;
+    }
+    parseInput(trackSchema, track);
+    return `${created ? "Added" : "Updated"} hidden track "${track.name}" (${track.id}), 0 to ${track.max}, with ${track.thresholds.length} threshold${track.thresholds.length === 1 ? "" : "s"}.`;
+  });
+}
+
+/** Removes endings that wait on the given challenge, threat, or track. */
 function dropEndings(seed: DraftSeed, id: string): string[] {
-  const dropped = (seed.endings ?? []).filter(({ when }) => ("threatId" in when ? when.threatId : when.challengeId) === id);
+  const dropped = (seed.endings ?? []).filter(({ when }) => ("threatId" in when ? when.threatId : "trackId" in when ? when.trackId : when.challengeId) === id);
   seed.endings = (seed.endings ?? []).filter((ending) => !dropped.includes(ending));
   if (seed.endings.length === 0) delete seed.endings;
   return dropped.map((ending) => `"${ending.name}"`);
@@ -844,6 +973,14 @@ function dropRouteReferences(seed: DraftSeed, matches: (ref: { fromId: string; d
     setOptional(threat, "lockRoutes", keep(threat.lockRoutes));
     setOptional(threat, "unlockRoutes", keep(threat.unlockRoutes));
   }
+  for (const threshold of (seed.tracks ?? []).flatMap((track) => track.thresholds)) {
+    setOptional(threshold, "lockRoutes", keep(threshold.lockRoutes));
+    setOptional(threshold, "unlockRoutes", keep(threshold.unlockRoutes));
+  }
+}
+
+function eachThreshold(seed: DraftSeed, change: (threshold: NonNullable<DraftSeed["tracks"]>[number]["thresholds"][number]) => void): void {
+  for (const track of seed.tracks ?? []) track.thresholds.forEach(change);
 }
 
 function tidyOutcomes(challenge: DraftSeed["challenges"][number]): void {
@@ -892,15 +1029,43 @@ export function remove(draft: Draft, raw: z.infer<typeof removeInput>): Operatio
         }
         delete cast.characters[input.id];
         if (cast.npcs) delete cast.npcs[input.id];
+        for (const challenge of seed.challenges) {
+          for (const outcome of [challenge.onSuccess, challenge.onFailure]) {
+            if (outcome) setOptional(outcome, "adjustTracks", outcome.adjustTracks?.filter((move) => move.subjectId !== input.id));
+          }
+          tidyOutcomes(challenge);
+        }
         return `Removed ${label}.`;
       case "challenge":
         if (!seed.challenges.some((challenge) => challenge.id === input.id)) fail(`There is no challenge with ID "${input.id}".`);
         seed.challenges = seed.challenges.filter((challenge) => challenge.id !== input.id);
+        eachThreshold(seed, (threshold) => setOptional(threshold, "unlockChallenges", threshold.unlockChallenges?.filter((id) => id !== input.id)));
         return `Removed challenge "${label}".${alsoEndings(dropEndings(seed, input.id))}`;
+      case "track":
+        requireTrack(seed, input.id);
+        seed.tracks = seed.tracks!.filter((track) => track.id !== input.id);
+        if (seed.tracks.length === 0) delete seed.tracks;
+        for (const character of seed.characters) {
+          if (character.tracks) {
+            delete character.tracks[input.id];
+            if (Object.keys(character.tracks).length === 0) delete character.tracks;
+          }
+        }
+        for (const challenge of seed.challenges) {
+          for (const outcome of [challenge.onSuccess, challenge.onFailure]) {
+            if (outcome) setOptional(outcome, "adjustTracks", outcome.adjustTracks?.filter((move) => move.trackId !== input.id));
+          }
+          tidyOutcomes(challenge);
+        }
+        return `Removed track "${label}".${alsoEndings(dropEndings(seed, input.id))}`;
       case "threat":
         requireThreat(seed, input.id);
         seed.threats = seed.threats!.filter((threat) => threat.id !== input.id);
         if (seed.threats.length === 0) delete seed.threats;
+        eachThreshold(seed, (threshold) => {
+          setOptional(threshold, "armThreats", threshold.armThreats?.filter((id) => id !== input.id));
+          setOptional(threshold, "disarmThreats", threshold.disarmThreats?.filter((id) => id !== input.id));
+        });
         for (const challenge of seed.challenges) {
           const without = (ids: string[] | undefined) => ids?.filter((id) => id !== input.id);
           if (challenge.onSuccess) {

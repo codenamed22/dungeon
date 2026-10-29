@@ -96,7 +96,7 @@ export function perceive(state: WorldState, characterId: string): Perception {
       .filter((other) => other.id !== self.id && other.locationId === self.locationId && inScene(other))
       .map((other) => ({ id: other.id, name: other.name, condition: conditionOf(other.hp, other.maxHp) })),
     challenges: state.challenges
-      .filter((challenge) => challenge.locationId === self.locationId)
+      .filter((challenge) => challenge.locationId === self.locationId && !challenge.locked)
       .map((challenge) => ({
         id: challenge.id,
         name: challenge.name,
@@ -135,8 +135,7 @@ export function availableActions(state: WorldState, characterId: string): Availa
     },
     attempt: state.challenges
       .filter((challenge) => (
-        challenge.locationId === self.locationId && !challenge.resolved
-        && (challenge.requiresItemId === undefined || quantity(self.inventory, challenge.requiresItemId) > 0)
+        challenge.locationId === self.locationId && !challenge.resolved && !challenge.locked        && (challenge.requiresItemId === undefined || quantity(self.inventory, challenge.requiresItemId) > 0)
       ))
       .map((challenge) => challenge.id),
     intent: state.rulings !== undefined,

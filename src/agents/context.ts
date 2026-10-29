@@ -194,6 +194,16 @@ export function describeEvent(event: AdventureEvent, state: WorldState, viewerId
     }
     case "discovery":
       return `${stamp} ${subject(data.actorId)} discovered, alone: ${data.text}`;
+    case "track_changed": {
+      const track = state.tracks?.find((entry) => entry.id === data.trackId);
+      return `${stamp} (hidden) "${nameIn(state.challenges, data.challengeId)}" moved ${nameIn(state.characters, data.characterId)}'s ${track?.name ?? data.trackId} by ${signed(data.delta)}, to ${data.value}${track ? `/${track.max}` : ""}.`;
+    }
+    case "threshold_reached": {
+      const track = state.tracks?.find((entry) => entry.id === data.trackId);
+      return `${stamp} (hidden) ${nameIn(state.characters, data.characterId)} reached "${data.thresholdId}" on ${track?.name ?? data.trackId}.`;
+    }
+    case "insight":
+      return `${stamp} ${subject(data.actorId)} came to understand, alone: ${data.text}`;
     case "belief_noted": {
       const evidence = data.evidence.length === 0 ? "" : ` from ${data.evidence.map((sequence) => `#${sequence}`).join(", ")}`;
       return `${stamp} ${subject(data.actorId)} noted (${data.source}${evidence}, ${data.confidence} confidence): `
@@ -204,6 +214,29 @@ export function describeEvent(event: AdventureEvent, state: WorldState, viewerId
       return `${stamp} ${subject(data.actorId)} ${verb}: "${data.text}"${data.status === "adopted" ? ` (${data.goalId})` : ""}`;
     }
   }
+}
+
+/**
+ * What the narrator and referee are told in private about the tracks of those at
+ * a place: where each stands, and the guidance of every threshold reached.
+ * Characters never see it.
+ */
+export function trackLines(state: WorldState, locationId: string): string[] {
+  const lines: string[] = [];
+  for (const character of state.characters) {
+    if (character.locationId !== locationId || !inScene(character)) continue;
+    for (const track of state.tracks ?? []) {
+      const value = character.tracks?.[track.id];
+      if (value === undefined) continue;
+      lines.push(`- ${character.name}, ${track.name}: ${value}/${track.max}${track.description ? ` (${track.description})` : ""}.`);
+      for (const threshold of [...track.thresholds].sort((a, b) => a.at - b.at)) {
+        if (threshold.guidance !== undefined && state.reached?.includes(`${character.id}:${track.id}:${threshold.id}`)) {
+          lines.push(`  - ${threshold.guidance}`);
+        }
+      }
+    }
+  }
+  return lines.length === 0 ? [] : ["", "## Hidden tracks (private: never state numbers, or tell a character about them)", ...lines];
 }
 
 /** An event as a numbered line, so an agent can cite it as evidence. */
@@ -369,6 +402,7 @@ export function renderNarrationPrompt(
   const lines = ["## Committed outcome to narrate", ...outcome, "", "## Scene"];
   lines.push(`${location?.name ?? locationId}${location?.description ? `: ${location.description}` : ""}`);
   lines.push("", "## Earlier events here, for continuity", ...(recent.length === 0 ? ["None."] : recent));
+  lines.push(...trackLines(state, locationId));
   if (feedback.length > 0) {
     lines.push("", "## Your previous narration was rejected", ...feedback.map((entry) => `- ${entry}`));
   }
@@ -449,7 +483,7 @@ export function renderRulingPrompt(
   ];
   lines.push(...placeLines(perception));
   lines.push("", "## Challenges here");
-  const here = state.challenges.filter((challenge) => challenge.locationId === perception.location.id);
+  const here = state.challenges.filter((challenge) => challenge.locationId === perception.location.id && !challenge.locked);
   if (here.length === 0) lines.push("None.");
   for (const challenge of here) {
     const details = [
@@ -461,6 +495,7 @@ export function renderRulingPrompt(
     lines.push(`- ${challenge.name} (${challenge.id}): ${details.join("; ")}${challenge.description ? `. ${challenge.description}` : ""}`);
   }
   lines.push(...beyondTheScene(state, perception));
+  lines.push(...trackLines(state, perception.location.id));
   lines.push("", `## ${perception.name}`);
   const status = statusLine(rules, perception.hp, perception.maxHp, perception.modifiers);
   if (status) lines.push(status);
@@ -491,7 +526,7 @@ function beyondTheScene(state: WorldState, perception: Perception): string[] {
   if (supporting.length > 0) {
     lines.push(`Supporting characters here: ${supporting.map((character) => `${character.name} (${character.id})`).join(", ")}.`);
   }
-  const elsewhere = state.challenges.filter((challenge) => challenge.locationId !== perception.location.id && !challenge.resolved);
+  const elsewhere = state.challenges.filter((challenge) => challenge.locationId !== perception.location.id && !challenge.resolved && !challenge.locked);
   lines.push("", "## Challenges elsewhere (only to point the way)");
   if (elsewhere.length === 0) lines.push("None.");
   for (const challenge of elsewhere) {
@@ -564,7 +599,7 @@ export function renderJudgingPrompt(
   lines.push(...saidLine(state, perception.name, said));
   lines.push("", "## Scene", ...placeLines(perception), "", "## Challenges here");
   const here = state.challenges.filter((challenge) => (
-    challenge.locationId === perception.location.id && ("intent" in attempt || challenge.id === attempt.challengeId)
+    challenge.locationId === perception.location.id && !challenge.locked && ("intent" in attempt || challenge.id === attempt.challengeId)
   ));
   if (here.length === 0) lines.push("None.");
   for (const challenge of here) {
@@ -583,6 +618,7 @@ export function renderJudgingPrompt(
   const status = statusLine(rules, perception.hp, perception.maxHp, perception.modifiers);
   if (status) lines.push(status);
   lines.push(carrying(perception));
+  lines.push(...trackLines(state, perception.location.id));
   lines.push("", `## What ${perception.name} found out privately (never reveal it)`, ...(discoveries.length === 0 ? ["Nothing."] : discoveries));
   if ("intent" in attempt && state.rulings) {
     lines.push("", "## Limits for a new check");

@@ -6,7 +6,7 @@ import { rulesOf } from "../../../src/model.ts";
 import { api, errorText } from "../api.ts";
 import { AssistantPanel } from "../creator/AssistantPanel.tsx";
 import {
-  ChallengesSection, CharactersSection, EndingsSection, ItemsSection, PlacesSection, ProblemList, StorySection, ThreatsSection,
+  ChallengesSection, CharactersSection, EndingsSection, ItemsSection, PlacesSection, ProblemList, StorySection, ThreatsSection, TracksSection,
 } from "../creator/sections.tsx";
 import type { SectionProps } from "../creator/sections.tsx";
 import { refusal, useDraft } from "../creator/useDraft.ts";
@@ -24,6 +24,7 @@ const TABS: readonly { id: Tab; label: string }[] = [
   { id: "items", label: "Items" },
   { id: "challenges", label: "Challenges" },
   { id: "threats", label: "Threats" },
+  { id: "tracks", label: "Tracks" },
   { id: "endings", label: "Endings" },
   { id: "review", label: "Review" },
 ];
@@ -36,6 +37,7 @@ const SECTIONS: Record<DraftSection, (props: SectionProps) => ReactNode> = {
   challenges: ChallengesSection,
   threats: ThreatsSection,
   endings: EndingsSection,
+  tracks: TracksSection,
 };
 
 interface Toast {
@@ -55,6 +57,7 @@ function countOf(draft: Draft, tab: Tab): number | null {
     case "challenges": return seed.challenges.length;
     case "threats": return seed.threats?.length ?? 0;
     case "endings": return seed.endings?.length ?? 0;
+    case "tracks": return seed.tracks?.length ?? 0;
     default: return null;
   }
 }
