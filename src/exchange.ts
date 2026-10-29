@@ -1,10 +1,10 @@
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { castForWorld } from "./adventures/index.ts";
-import { loadSetup, parseSetup, placeholderCast } from "./agents/setup.ts";
+import { loadSetup, parseSetup, placeholderCast, setupSchema } from "./agents/setup.ts";
 import { draftSchema, slugify } from "./creator/operations.ts";
 import type { AdventureEngine, DraftRecord } from "./engine.ts";
-import { EngineError, parseInput } from "./model.ts";
+import { EngineError, parseInput, readableIssues } from "./model.ts";
 import type { WorldState } from "./model.ts";
 
 // Worlds as files, to keep, share, or move between databases. A design is the
@@ -82,7 +82,9 @@ export function readWorldFile(input: unknown): WorldFile {
   if (typeof version === "number" && version > WORLD_FILE_VERSION) {
     throw new EngineError("INVALID_INPUT", `This file is from a newer version of Dungeons (file version ${version}); update to import it.`);
   }
-  return parseInput(worldFileSchema, input);
+  const parsed = worldFileSchema.safeParse(input);
+  if (!parsed.success) throw new EngineError("INVALID_INPUT", `The file isn't valid: ${readableIssues(parsed.error)}`);
+  return parsed.data;
 }
 
 /**
@@ -100,11 +102,18 @@ export async function importWorldFile(engine: AdventureEngine, input: unknown, o
   const world = await engine.importWorld(worldId, file.events, (state) => {
     const characters = new Set(state.characters.map((character) => character.id));
     return {
-      setup: file.setup === null ? { cast: placeholderCast(state), models: {} } : parseSetup(file.setup, state),
+      setup: file.setup === null ? { cast: placeholderCast(state), models: {} } : parseSetup(checkedSetup(file.setup), state),
       muted: file.muted.filter((id) => characters.has(id)),
     };
   });
   return { kind: "save", world };
+}
+
+/** The file's setup, or a refusal that says which part is wrong. */
+function checkedSetup(setup: unknown): unknown {
+  const parsed = setupSchema.safeParse(setup);
+  if (!parsed.success) throw new EngineError("INVALID_INPUT", `The file's setup isn't valid: ${readableIssues(parsed.error)}`);
+  return setup;
 }
 
 /** `base`, or the first of `base-2`, `base-3`, … that no world has taken. */

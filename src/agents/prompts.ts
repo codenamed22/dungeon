@@ -8,6 +8,7 @@ import type { WorldRules } from "../model.ts";
 export const PROMPT_VERSION = "7.0";
 
 export const MAX_PREMISE_LENGTH = 1000;
+export const MAX_NARRATOR_STYLE_LENGTH = 1000;
 
 const personaText = z.string().trim().min(1).max(500);
 const personaLine = z.string().trim().min(1).max(300);
@@ -56,7 +57,7 @@ export const castSchema = z.strictObject({
   premise: z.string().trim().min(1).max(MAX_PREMISE_LENGTH).optional(),
   /** "action" when absent. */
   pace: paceSchema.optional(),
-  narratorStyle: personaText,
+  narratorStyle: z.string().trim().min(1).max(MAX_NARRATOR_STYLE_LENGTH),
   characters: z.record(z.string(), personaSchema),
   /** NPC personas, keyed by character ID; an NPC without one never speaks. */
   npcs: z.record(z.string(), npcPersonaSchema).optional(),

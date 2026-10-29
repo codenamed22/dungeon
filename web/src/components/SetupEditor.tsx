@@ -151,7 +151,7 @@ export function SetupEditor({ worldId, view, onSaved }: { worldId: string; view:
       </label>
       <label className="field">
         How the narrator writes
-        <textarea rows={2} maxLength={500} value={draft.narratorStyle}
+        <textarea rows={2} maxLength={1000} value={draft.narratorStyle}
           onChange={(event) => { const narratorStyle = event.target.value; change((current) => ({ ...current, narratorStyle })); }} />
       </label>
       <label className="inline">

@@ -137,4 +137,6 @@ test("a world file says what it is, and a file from elsewhere or a newer version
   refuse({ ...design, version: 2 }, /newer version of Dungeons \(file version 2\)/);
   refuse({ ...design, kind: "everything" }, /kind/);
   refuse({ ...design, draft: { ...design.draft, chat: [] } }, /chat/);
+  const wordy = { ...design, draft: { ...design.draft, cast: { ...design.draft.cast, narratorStyle: "x".repeat(1001) } } };
+  refuse(wordy, /^The file isn't valid: draft\.cast\.narratorStyle is too long \(at most 1000 characters\)$/);
 });

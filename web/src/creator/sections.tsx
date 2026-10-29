@@ -195,7 +195,7 @@ export function StorySection({ editor, draft, onToast }: SectionProps) {
         placeholder="e.g. A payments company at 3 a.m. Checkout is down, and two engineers on call have an hour before morning traffic."
         hint={<>Setting, genre, tone, and what is at stake, in two to four sentences. <strong>Every AI reads it, the main characters included</strong>, so keep secrets and solutions out of it.</>}
         commit={(premise) => apply((current) => setWorld(current, { premise }))} />
-      <LiveText label="How the narrator writes" multiline rows={2} maxLength={500} value={cast.narratorStyle}
+      <LiveText label="How the narrator writes" multiline rows={2} maxLength={1000} value={cast.narratorStyle}
         hint="e.g. Warm and observant, present tense." commit={(narratorStyle) => apply((current) => setWorld(current, { narratorStyle }))} />
       <div className="card-fields" style={{ border: 0, padding: 0 }}>
         <section className="group" aria-labelledby="rules-title">

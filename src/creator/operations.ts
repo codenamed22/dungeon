@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { modelSetupSchema } from "../agents/models.ts";
-import { castProblems, castSchema, MAX_PREMISE_LENGTH, npcPersonaSchema, paceSchema, personaSchema } from "../agents/prompts.ts";
+import { castProblems, castSchema, MAX_NARRATOR_STYLE_LENGTH, MAX_PREMISE_LENGTH, npcPersonaSchema, paceSchema, personaSchema } from "../agents/prompts.ts";
 import type { Cast } from "../agents/prompts.ts";
 import {
   abilitySchema, BAND_DIFFICULTY, difficultyBandSchema, EngineError, MAX_ENDING_LENGTH, parseInput, rulesOf, worldProblems,
@@ -296,7 +296,7 @@ export const setWorldInput = z.strictObject({
     "Setting, genre, tone, and what is at stake, in two to four sentences. Every AI reads it, the main characters included, so keep "
       + "secrets and solutions out of it. An empty string removes it.",
   ),
-  narratorStyle: z.string().trim().min(1).max(500).optional().describe("How the narrator writes, e.g. \"Warm and wry, present tense.\""),
+  narratorStyle: z.string().trim().min(1).max(MAX_NARRATOR_STYLE_LENGTH).optional().describe("How the narrator writes, e.g. \"Warm and wry, present tense.\""),
   outcomes: z.enum(["judgment", "dice"]).optional().describe(
     "How attempts are decided: judgment, by a referee from what each challenge says it takes; or dice, a d20 plus a stat against the difficulty",
   ),
