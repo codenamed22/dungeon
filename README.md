@@ -190,7 +190,9 @@ What you can do:
   one in full (`get_example`) to see how a finished world is built, borrowing
   the structure rather than the names or plot unless you ask for a copy or a
   variation. It names new things itself, so it can add places and connect
-  them, or add a character and write their persona, in one step. Each
+  them, or add a character and write their persona, in one step; a call that
+  refers to something added later in the same step runs again once the rest
+  have. Each
   message's changes can be undone while nothing has changed since, and Stop
   keeps what it has done so far. A message is limited to 16 model calls, 60
   tool calls, and 0.50 credits (or 400,000 tokens when the cost is not

@@ -458,6 +458,28 @@ test("the AI creator calls tools, sends their results back with its own message 
   assert.equal(draftEvent.type === "draft" && draftEvent.revision, 2);
 });
 
+test("a call that refers to something added later in the same reply runs again once the rest have", async () => {
+  const replies = [
+    completion({ tool_calls: [
+      toolCall("a", "upsert_challenge", { id: "pick-lock", name: "Pick the lock", placeId: "hall", minutes: 2, criteria: "A steady hand.", failureArmsThreatIds: ["squall"] }),
+      toolCall("b", "upsert_ending", { id: "soaked", name: "Soaked", text: "The rain wins.", challengeId: "pick-lock", outcome: "failure" }),
+      toolCall("c", "upsert_threat", { id: "squall", name: "Squall", text: "Rain lashes the windows.", afterMinutes: 3 }),
+      toolCall("d", "upsert_place", { id: "attic" }),
+    ] }),
+    completion({ content: "Added the lock, the squall, and an ending." }),
+  ];
+  const requests: Record<string, any>[] = [];
+  const { run } = await creatorRun(async (body) => {
+    requests.push(body);
+    return replies.shift()!;
+  }, { draft: build(blankDraft(), (draft) => upsertPlace(draft, { id: "hall", name: "Hall" })) });
+  assert.deepEqual(run.tools.map((line) => [line.name, line.ok]), [["upsert_challenge", true], ["upsert_ending", true], ["upsert_threat", true], ["upsert_place", false]]);
+  assert.deepEqual(run.draft.seed.challenges[0]?.onFailure, { armThreats: ["squall"] });
+  assert.deepEqual(run.draft.seed.endings?.map((ending) => ending.id), ["soaked"]);
+  const results = requests[1]!.messages.slice(-4).map((message: any) => [message.tool_call_id, JSON.parse(message.content).ok]);
+  assert.deepEqual(results, [["a", true], ["b", true], ["c", true], ["d", false]], "the model hears how each call finally went, in order");
+});
+
 test("the AI creator stops at its limits, on cancellation, and on provider errors, keeping what it saved", async () => {
   const checking = async () => completion({ tool_calls: [toolCall("c", "check_draft", {})] });
   const rounds = await creatorRun(checking, { limits: { maxRounds: 3, maxToolCalls: 40, maxCost: 10, maxTokens: 1e9 } });

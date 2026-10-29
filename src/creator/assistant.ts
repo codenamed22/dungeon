@@ -5,6 +5,7 @@ import type { ModelUsage } from "../agents/provider.ts";
 import { draftProblems } from "./operations.ts";
 import type { Draft, DraftProblem } from "./operations.ts";
 import { creatorExamples, creatorToolDefinitions, runCreatorTool } from "./tools.ts";
+import type { ToolOutcome } from "./tools.ts";
 
 // The AI creator's loop for one message from the director: the model calls
 // tools, sees their results, and calls more, until it replies or a limit stops
@@ -153,17 +154,39 @@ export async function runCreator(options: {
         content: answer.content,
         tool_calls: answer.toolCalls.map((call) => ({ id: call.id, type: "function", function: { name: call.name, arguments: call.arguments } })),
       });
-      let changed = false;
+      // The calls run in order. One that failed runs again once the rest have,
+      // since it may refer to something a later call in the same reply added.
+      const outcomes: (ToolOutcome | undefined)[] = [];
       for (const call of answer.toolCalls) {
-        // Every call needs an answer, or the next request is malformed.
         if (toolCalls >= limits.maxToolCalls) {
           stopped = `Stopped at ${limits.maxToolCalls} tool calls, the limit for one message.`;
-          messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ ok: false, error: "Not run: the tool call limit was reached." }) });
+          outcomes.push(undefined);
           continue;
         }
         toolCalls += 1;
         const outcome = runCreatorTool(draft, call.name, call.arguments);
         draft = outcome.draft;
+        outcomes.push(outcome);
+      }
+      for (let progress = true; progress;) {
+        progress = false;
+        for (const [index, call] of answer.toolCalls.entries()) {
+          if (outcomes[index]?.ok !== false) continue;
+          const again = runCreatorTool(draft, call.name, call.arguments);
+          if (!again.ok) continue;
+          outcomes[index] = again;
+          draft = again.draft;
+          progress = true;
+        }
+      }
+      let changed = false;
+      for (const [index, call] of answer.toolCalls.entries()) {
+        const outcome = outcomes[index];
+        // Every call needs an answer, or the next request is malformed.
+        if (!outcome) {
+          messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ ok: false, error: "Not run: the tool call limit was reached." }) });
+          continue;
+        }
         changed ||= outcome.changed;
         const line = { name: call.name, summary: outcome.summary, ok: outcome.ok };
         tools.push(line);

@@ -391,6 +391,7 @@ export function creatorSystemPrompt(frame: Partial<WorldFrame> = {}, examples: r
     "- An ending for success, and one for failing or running out of time.",
     "- Distinct voices, and goals that pull slightly against each other. A voice says how someone really talks, such as \"warm, teasing, trails off when nervous\", never just \"brief\".",
     "- Rules that fit: judgment, no stats, and no health for social, mystery, and technical stories; dice and health for peril.",
+    "- Mechanics that match the words: if a description says a door won't open without a badge, block that way and give it a challenge that needs the badge and opens it.",
     ...(examples.length === 0 ? [] : [
       "",
       "Example worlds, finished and played: read one with get_example to see how it is built, such as how criteria are written so the referee can check them, how threats and endings make time matter, and how secrets stay out of the premise. Before building a new world in an empty draft, read the closest example with get_example, in a reply of its own, then build. Borrow its structure, not its names, text, or plot, unless the director asks for a copy or a variation.",
@@ -405,7 +406,7 @@ export function creatorSystemPrompt(frame: Partial<WorldFrame> = {}, examples: r
     "- Make many tool calls in each reply: everything whose turn has come, such as every place and every way between them, or each character and their persona. Calls in one reply run in order.",
     "- Give each new thing its ID yourself, in lowercase with hyphens, such as \"grand-hall\", so that later calls in the same reply can refer to it. To change something, use the ID it already has.",
     "- At the start of a message, call get_draft to see the world as it is now, unless the draft is empty; the director may have changed it.",
-    "- Each change's result lists what still stops the world being played. Fix the errors you can before you reply.",
+    "- Each change's result lists what still stops the world being played, so there's no need for check_draft after changes. Fix the errors you can before you reply.",
     "- While you work, write nothing but tool calls. Never say you will do something: do it now, with tools, in this message. If a call fails, read why, fix it, and carry on.",
     "- If a request is too vague to act on, ask one short question instead of guessing. \"A first date at a night market\" is enough to build.",
     "- When you are done, reply once, in a few plain sentences: what you made or changed, anything you could not do and why, and anything the director should decide. Do not repeat the draft back.",

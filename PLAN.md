@@ -296,10 +296,30 @@
   difficulty, fixed by the last change. The first call still took 88 s,
   planning and writing 13 calls (about 9,000 output tokens), and it didn't read
   an example, hence the example-first instruction. The two runs cost 0.036
-  credits. The difficulty default and example-first instruction are not yet
-  tried live.
+  credits.
 
-  Verified: typecheck, both builds, and all 215 tests pass.
+  A final run of the same two messages (0.019 credits) confirmed the last two
+  changes: the creator read the Outage example first, in a 3-second call of its
+  own, and no call failed for a difficulty. The heist world was complete in 6
+  calls and 105 s (39 tool calls, no errors or warnings), with clean secrets,
+  checkable criteria, two routes to the swap, a wrong collector, a 45-minute
+  clock, and four endings; the guard took 5 calls and 59 s. Gaps it showed,
+  and what changed:
+  - A challenge added before the threat it sets off, in the same reply,
+    failed, and so did the ending that waited on it (three times, a repair
+    round each). A failed call now runs again once the rest of its reply have,
+    until nothing more succeeds; the model hears each call's final outcome.
+  - It still spent a round on check_draft after changes, though every result
+    lists the problems; the instructions now say it isn't needed.
+  - A description promised what the mechanics didn't do: "the back-of-house
+    doors won't open without a badge", with nothing blocked and the badge
+    needed by nothing. The instructions now ask for mechanics that match the
+    words.
+  - Still open: the call that writes most of a world takes 70 to 90 s (about
+    8,000 output tokens), with only "Working" on screen. Streaming the reply
+    would show progress; the speed is the model's.
+
+  Verified: typecheck, both builds, and all 216 tests pass.
 - Development and tests use local PostgreSQL or a Neon development branch, not the
   `production` branch.
 
