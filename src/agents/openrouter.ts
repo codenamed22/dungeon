@@ -1,10 +1,11 @@
+import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { ProviderConfigError, ProviderError } from "./provider.ts";
 import type { AgentRole, ModelProvider, ModelRequest, ModelResponse, ModelUsage, ProviderFailure } from "./provider.ts";
 
 // OpenRouter's chat completions API, called with fetch: no SDK dependency.
 
-export const DEFAULT_OPENROUTER_MODEL = "~deepseek/deepseek-pro-latest";
+export const DEFAULT_OPENROUTER_MODEL = "~deepseek/deepseek-v4-flash-latest";
 export const DEFAULT_REASONING_EFFORT = "low";
 export const DEFAULT_MAX_OUTPUT_TOKENS = 4096;
 /** Writing a world takes many tool calls in one reply, with reasoning counted against the limit too. */
@@ -26,6 +27,8 @@ export interface OpenRouterSettings {
    */
   efforts: Record<AgentRole, string | undefined>;
   maxOutputTokens: number;
+  /** Sent as the first system message of every request. */
+  systemPrompt?: string;
   timeoutMs?: number;
   maxRetries?: number;
   fetch?: typeof fetch;
@@ -66,7 +69,24 @@ export function openRouterSettingsFromEnv(env: NodeJS.ProcessEnv, model?: string
       dm: effortSetting(env, "DUNGEONS_DM_EFFORT") ?? effort,
     },
     maxOutputTokens,
+    ...systemPromptSetting(env),
   };
+}
+
+/** The text of DUNGEONS_SYSTEM_PROMPT_FILE, else DUNGEONS_SYSTEM_PROMPT with a literal \n read as a line break. */
+function systemPromptSetting(env: NodeJS.ProcessEnv): { systemPrompt?: string } {
+  const file = setting(env, "DUNGEONS_SYSTEM_PROMPT_FILE");
+  let prompt: string | undefined;
+  if (file !== undefined) {
+    try {
+      prompt = readFileSync(file, "utf8").trim() || undefined;
+    } catch (error) {
+      throw new ProviderConfigError(`Could not read DUNGEONS_SYSTEM_PROMPT_FILE (${file}): ${describeError(error)}`);
+    }
+  } else {
+    prompt = setting(env, "DUNGEONS_SYSTEM_PROMPT")?.replaceAll("\\n", "\n");
+  }
+  return prompt === undefined ? {} : { systemPrompt: prompt };
 }
 
 const catalogSchema = z.object({
@@ -468,6 +488,7 @@ export class OpenRouterProvider implements ModelProvider {
     return {
       model: this.settings.models[request.role],
       messages: [
+        ...(this.settings.systemPrompt ? [{ role: "system", content: this.settings.systemPrompt }] : []),
         { role: "system", content: request.system },
         { role: "user", content: request.prompt },
       ],
@@ -485,13 +506,15 @@ export interface ChatSettings {
   /** As for a role in OpenRouterSettings: an effort, "default", or undefined for low or the nearest. */
   effort: string | undefined;
   maxOutputTokens: number;
+  /** Sent as the first system message of every request. */
+  systemPrompt?: string;
   timeoutMs?: number;
   maxRetries?: number;
   fetch?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
 }
 
-/** Settings for the AI creator; `model` overrides the configured one. */
+/** Settings for the AI creator;  `model` overrides the configured one. */
 /** The AI creator's model unless the director picks another. */
 export function creatorModelFromEnv(env: NodeJS.ProcessEnv): string {
   return setting(env, "DUNGEONS_CREATOR_MODEL") || setting(env, "DUNGEONS_MODEL") || DEFAULT_OPENROUTER_MODEL;
@@ -509,6 +532,7 @@ export function creatorSettingsFromEnv(env: NodeJS.ProcessEnv, model?: string): 
     model: model?.trim() || creatorModelFromEnv(env),
     effort: effortSetting(env, "DUNGEONS_CREATOR_EFFORT") ?? effortSetting(env, "DUNGEONS_REASONING_EFFORT"),
     maxOutputTokens,
+    ...systemPromptSetting(env),
   };
 }
 
@@ -561,7 +585,7 @@ export class OpenRouterChat {
     // No tool_choice: "auto" is the default, and requiring the parameter would rule out providers that omit it.
     const body = JSON.stringify({
       model: this.settings.model,
-      messages,
+      messages: this.settings.systemPrompt ? [{ role: "system", content: this.settings.systemPrompt }, ...messages] : messages,
       tools,
       ...(capabilities.maxTokens ? { max_tokens: this.settings.maxOutputTokens } : {}),
       ...(capabilities.reasoning && effort !== "default" ? { reasoning: { effort } } : {}),

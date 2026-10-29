@@ -327,7 +327,7 @@ character's memory, or `report --world aqueduct-rehearsal` for its metrics.
 `step` and `run` call models through [OpenRouter](https://openrouter.ai). Set
 `OPENROUTER_API_KEY` in `.env.local` or `.env`, or export it (see
 [.env.example](./.env.example)). Characters and narrator default to
-`~deepseek/deepseek-pro-latest`, OpenRouter's alias for the latest DeepSeek Pro.
+`~deepseek/deepseek-v4-flash-latest`, OpenRouter's alias for the latest DeepSeek V4 Flash.
 Pick another model with `--model` for one command, or in the environment:
 
 ```sh
@@ -337,7 +337,7 @@ npm run director -- step --model ~deepseek/deepseek-flash-latest
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `DUNGEONS_MODEL` | `~deepseek/deepseek-pro-latest` | Model for both roles. |
+| `DUNGEONS_MODEL` | `~deepseek/deepseek-v4-flash-latest` | Model for both roles. |
 | `DUNGEONS_CHARACTER_MODEL`, `DUNGEONS_DM_MODEL` | `DUNGEONS_MODEL` | Model for one role. `--model` overrides both. |
 | `DUNGEONS_REASONING_EFFORT` | `low` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `default` (the model's own). |
 | `DUNGEONS_CHARACTER_EFFORT`, `DUNGEONS_DM_EFFORT` | `DUNGEONS_REASONING_EFFORT` | Effort for one role. |

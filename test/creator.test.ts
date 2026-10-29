@@ -629,7 +629,7 @@ test("drafts in the database, and publishing one as a world", {
     });
 
     await t.test("the AI creator refuses before streaming when it cannot start", async () => {
-      assert.deepEqual((await call("GET", "/api/creator")).body, { model: "~deepseek/deepseek-pro-latest", keyConfigured: true });
+      assert.deepEqual((await call("GET", "/api/creator")).body, { model: "~deepseek/deepseek-v4-flash-latest", keyConfigured: true });
       const draft = (await call("POST", "/api/drafts", {})).body;
       const post = (body: Record<string, unknown>, id = draft.id) => call("POST", `/api/drafts/${id}/assistant`, { model: "test/creator", ...body });
       assert.deepEqual((await post({ message: "Hi", expectedRevision: 7 })).body.code, "STALE_REVISION");

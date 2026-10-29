@@ -151,7 +151,7 @@ const bodies = {
   saveDraft: z.object({ draft: z.unknown(), expectedRevision: z.number().int().positive() }),
   publishDraft: z.object({ worldId: z.string(), expectedRevision: z.number().int().positive() }),
   assistant: z.object({
-    message: z.string().trim().min(1).max(4000),
+    message: z.string().trim().min(1).max(16_000),
     model: z.string().max(200).optional(),
     expectedRevision: z.number().int().positive(),
   }),

@@ -306,7 +306,7 @@ export function AssistantPanel({ editor, draftId, launch }: { editor: DraftEdito
         <form className="assistant-input" onSubmit={(event) => { event.preventDefault(); void send(text); }}>
           {noKey && <p className="assistant-error">Set OPENROUTER_API_KEY in .env.local and restart the server to use the AI creator.</p>}
           <div className="composer">
-            <textarea rows={Math.min(5, Math.max(1, text.split("\n").length))} value={text} maxLength={4000} onChange={(event) => setText(event.target.value)} onKeyDown={onKey}
+            <textarea rows={Math.min(5, Math.max(1, text.split("\n").length))} value={text} maxLength={16000} onChange={(event) => setText(event.target.value)} onKeyDown={onKey}
               placeholder={running ? "Working…" : "Ask the AI creator…"} aria-label="Message to the AI creator" disabled={running || noKey || seenIntro === "no"} />
             {running ? (
               <button type="button" className="round-send" aria-label="Stop" title="Stop: it keeps what it has done so far" onClick={() => controller.current?.abort()}>

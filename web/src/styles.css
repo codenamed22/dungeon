@@ -471,6 +471,16 @@ dialog .event-actions { margin-top: 0; padding-top: 0; border-top: 0; }
 details.sheet { display: block; }
 details.sheet summary { cursor: pointer; }
 .model-field { display: grid; gap: 6px; }
+.combo { position: relative; }
+.combo-button {
+  width: 100%; text-align: left; padding: 8px 10px; font: inherit; color: inherit; cursor: pointer;
+  background: var(--sunken); border: 1px solid var(--line); border-radius: var(--radius-s);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.combo-panel {
+  position: absolute; z-index: 20; left: 0; right: 0; top: calc(100% + 4px); display: grid; gap: 6px; padding: 8px;
+  background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius-s); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
 .more-switch { margin-bottom: 14px; }
 fieldset.sheet { margin: 0; }
 fieldset.sheet legend { padding: 0 4px; }

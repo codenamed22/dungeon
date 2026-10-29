@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { api, errorText } from "../api.ts";
 import type { Cast, ModelInfo, ModelSetup, NpcPersona, Persona, Setup, WorldView } from "../types.ts";
@@ -303,65 +303,88 @@ function ModelField({ label, hint, value, resolved, effort, onChange }: {
   onChange(model: string | undefined, effort: string | undefined): void;
 }) {
   const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
   const [results, setResults] = useState<ModelInfo[] | null>(null);
   const [chosen, setChosen] = useState<ModelInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const box = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!query.trim()) {
-      setResults(null);
-      return;
-    }
+    if (!open) return;
     let current = true;
     const timer = setTimeout(() => {
       api.models(query)
         .then((models) => { if (current) { setResults(models); setError(null); } })
         .catch((problem) => { if (current) setError(errorText(problem)); });
-    }, 300);
+    }, query.trim() ? 250 : 0);
     return () => { current = false; clearTimeout(timer); };
-  }, [query]);
+  }, [query, open]);
 
-  const efforts = chosen?.id === (value ?? resolved) ? chosen.efforts : null;
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: MouseEvent) => { if (!box.current?.contains(event.target as Node)) setOpen(false); };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [open]);
+
+  const known = [...(results ?? []), ...(chosen ? [chosen] : [])];
+  const efforts = known.find((model) => model.id === (value ?? resolved))?.efforts ?? null;
   const dollars = (amount: number | null) => (amount === null ? "?" : `$${Number(amount.toFixed(4))}`);
   const price = (model: ModelInfo) => (model.promptPerMillion === null ? "" : ` · ${dollars(model.promptPerMillion)}/${dollars(model.completionPerMillion)} per M tokens`);
+  const pick = (model: ModelInfo | null) => {
+    setChosen(model);
+    setOpen(false);
+    setQuery("");
+    onChange(model?.id, effort);
+  };
   return (
     <div className="field model-field">
       <div className="row">
         <strong>{label}</strong>
         <span className="muted small grow">{hint}</span>
       </div>
-      <input value={value ?? ""} placeholder={`${resolved} (default)`}
-        onChange={(event) => onChange(event.target.value.trim() || undefined, effort)} aria-label={`${label} model`} />
-      <div className="row">
-        <input className="grow small" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search OpenRouter models, e.g. claude sonnet" />
-        <label className="inline small">
-          effort{" "}
-          <select value={effort ?? ""} onChange={(event) => onChange(value, event.target.value || undefined)}>
-            <option value="">from environment</option>
-            <option value="default">model default</option>
-            {(efforts ?? ["none", "minimal", "low", "medium", "high", "xhigh", "max"]).map((level) => <option key={level} value={level}>{level}</option>)}
-          </select>
-        </label>
+      <div className="combo" ref={box}>
+        <button type="button" className="combo-button" aria-haspopup="listbox" aria-expanded={open} aria-label={`${label} model`}
+          onClick={() => setOpen((was) => !was)}>
+          {value ?? `${resolved} (default)`}
+        </button>
+        {open && (
+          <div className="combo-panel">
+            <input value={query} onChange={(event) => setQuery(event.target.value)} autoFocus
+              onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); setOpen(false); } }}
+              placeholder="Search OpenRouter models, e.g. claude sonnet" aria-label={`Search ${label} models`} />
+            <ul className="model-results small" role="listbox">
+              <li>
+                <button type="button" className="link" onClick={() => pick(null)}>{resolved} (default)</button>
+              </li>
+              {results === null && !error && <li className="muted">Loading…</li>}
+              {results?.length === 0 && <li className="muted">No models match.</li>}
+              {results?.map((model) => (
+                <li key={model.id}>
+                  <button type="button" className="link" disabled={model.output === "text"} role="option" aria-selected={model.id === value}
+                    title={model.output === "text" ? "This model cannot return JSON, which every agent needs" : undefined}
+                    onClick={() => pick(model)}>
+                    {model.id}
+                  </button>
+                  <span className="muted">
+                    {price(model)}{model.contextLength ? ` · ${Math.round(model.contextLength / 1000)}k context` : ""}
+                    {model.reasoning && " · reasoning"}{model.output === "text" && " · no JSON output"}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            {error && <p className="error small">{error}</p>}
+          </div>
+        )}
       </div>
-      {error && <p className="error small">{error}</p>}
-      {results && (
-        <ul className="model-results small">
-          {results.length === 0 && <li className="muted">No models match.</li>}
-          {results.map((model) => (
-            <li key={model.id}>
-              <button type="button" className="link" disabled={model.output === "text"}
-                title={model.output === "text" ? "This model cannot return JSON, which every agent needs" : undefined}
-                onClick={() => { setChosen(model); setQuery(""); onChange(model.id, effort); }}>
-                {model.id}
-              </button>
-              <span className="muted">
-                {model.isDefault && " · default"}{price(model)}{model.contextLength ? ` · ${Math.round(model.contextLength / 1000)}k context` : ""}
-                {model.reasoning && " · reasoning"}{model.output === "text" && " · no JSON output"}
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
+      <label className="inline small">
+        effort{" "}
+        <select value={effort ?? ""} onChange={(event) => onChange(value, event.target.value || undefined)}>
+          <option value="">from environment</option>
+          <option value="default">model default</option>
+          {(efforts ?? ["none", "minimal", "low", "medium", "high", "xhigh", "max"]).map((level) => <option key={level} value={level}>{level}</option>)}
+        </select>
+      </label>
     </div>
   );
 }
