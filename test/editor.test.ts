@@ -9,6 +9,7 @@ import { editorSystemPrompt } from "../src/agents/prompts.ts";
 import { ScriptedProvider } from "../src/agents/provider.ts";
 import { runEditor } from "../src/editor/assistant.ts";
 import type { EditorEvent, EditorTurn } from "../src/editor/assistant.ts";
+import { storyLines } from "../src/editor/tools.ts";
 import { AdventureEngine } from "../src/engine.ts";
 import type { Command } from "../src/model.ts";
 import { createApp } from "../src/server/app.ts";
@@ -176,6 +177,22 @@ test("the story editor reviews a world in play, then makes the approved changes"
       assert.equal((await post("/api/worlds/served/editor", { message: "Hi", pass: "rewrite" })).status, 400);
     });
 
+    await t.test("the story the editor reads leaves out wiped lines, and the wipe says what went", async () => {
+      await engine.createWorld(starterWorld("rewound"));
+      const act = async (input: Record<string, unknown>) => {
+        const { revision } = await engine.getWorld("rewound");
+        await engine.execute("rewound", { requestId: randomUUID(), expectedRevision: revision, ...input });
+      };
+      await act({ role: "character", actorId: "mira", speech: "Lantern first." }); // #2
+      await act({ role: "character", actorId: "bram", speech: "Bars next." }); // #3
+      await act({ role: "director", action: { type: "retcon", sequence: 2, replacement: "Rope first." } }); // #4
+      await act({ role: "director", action: { type: "wipe", fromSequence: 3 } }); // #5
+      const { lines } = await storyLines(engine, "rewound", { newest: true, lines: 20, chars: 5000 });
+      assert.equal(lines.length, 2, lines.join("\n"));
+      assert.match(lines[0]!, /^#2 .*Rope first\./);
+      assert.match(lines[1]!, /^#5 .*The director wiped #3–#4; the story went back to before #3\./);
+    });
+
     await t.test("the editor and a run never overlap", async () => {
       // A run elsewhere holds the world's lease: the editor waits for it.
       assert.ok(await engine.acquireLease("served", "a-run-elsewhere", 60_000));
@@ -193,6 +210,7 @@ test("the story editor reviews a world in play, then makes the approved changes"
       assert.equal(run.status, 409);
       assert.match((await run.json()).error, /story editor is working on this world/);
       assert.equal((await post("/api/worlds/served/step", {})).status, 409);
+      assert.equal((await post("/api/worlds/served/wipe", { fromSequence: 2 })).status, 409);
       assert.equal((await post("/api/worlds/served/editor", { message: "Me too.", pass: "review" })).status, 409);
       assert.equal(await engine.acquireLease("served", "a-run-elsewhere", 60_000), false, "the editor holds the lease");
       stop.abort();

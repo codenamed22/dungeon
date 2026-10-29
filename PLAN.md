@@ -459,6 +459,50 @@
     marks on speech, so quotes around a whole edit are dropped.
 
   Verified: typecheck, both builds, and all 230 tests pass.
+- **Wiping from a line, and deleting notes and goals: complete locally.** The
+  user pointed out that only narration, speech, and introduced events could be
+  deleted, and asked for a way to clean up the rest when a story goes off
+  course. They chose to wipe from a line (the line and everything after it)
+  and to make notes and goals deletable one at a time.
+  - **Wipes:** a director `wipe` command makes a `wiped` event with a
+    `fromSequence`. Everything from there up to the wipe is taken back,
+    except retractions of earlier lines, so the director's edits and
+    deletions of earlier lines stay. A wipe starts at the first line of a
+    turn, outside any earlier wipe, and not at a wipe or a retraction; it is
+    allowed after an ending. Its clock is the time of the line before it.
+  - **One code path:** the Replayer rewinds by replaying the history before
+    the wipe afresh and reapplying the surviving retractions, and changes
+    nothing unless the wipe event then checks out. The engine resolves a wipe
+    by replaying the whole history through the Replayer, so the stored state
+    is what replay, branching, and import reach.
+  - **Readers:** a `wiped` SQL predicate (indexed by migration 9) keeps wiped
+    events out of agents' perceived events and memory search, and stops a
+    wiped retraction counting. The browser-safe `src/wipes.ts` gives the turn
+    runner, metrics, the CLI transcript, the story editor, and the feed the
+    same rule.
+  - **Notes and goals:** a note, or a goal's latest live change, can be
+    deleted quietly, not reworded or corrected. Deleting an adoption drops the
+    goal, and deleting a fulfilment or abandonment makes it adopted again.
+    Deleting any line also deletes, in the same command, the live notes whose
+    evidence is then all deleted.
+  - **Server and feed:** `POST /api/worlds/:id/wipe` is refused while the
+    world runs, here or elsewhere (it takes the lease briefly), or the story
+    editor works on it. The feed adds "Wipe from here" (an eraser, or the "…"
+    sheet on phones), which wipes from the start of the line's turn after
+    saying how many lines go. Wiped lines are faded, tagged "wiped by #N", and
+    offer only Branch, which brings their timeline back as a new world. Notes
+    and goals get the bin, with "{Name} forgets this".
+
+  Verified 2026-10-29 on local PostgreSQL 16: typecheck, both builds, and all
+  237 tests pass. Headless Chrome, at 1440 px and 390 px with no model, did
+  the following, with no console errors or sideways scrolling:
+  - deleted a note;
+  - deleted Tamsin's warning, and Mira's note from it went too;
+  - deleted Bram's goal;
+  - wiped from the middle of Bram's turn: it wiped from the turn's start, the
+    clock and characters went back, and Mira's view left the wiped lines out;
+  - branched from a wiped line, and the branch had the bars open;
+  - on a phone, used "Wipe from here" from the line menu.
 - Development and tests use local PostgreSQL or a Neon development branch, not the
   `production` branch.
 

@@ -154,6 +154,8 @@ export const api = {
   deleteLine: (worldId: string, sequence: number, note?: string) => request<{ sequence: number }>(
     "POST", `${at(worldId)}/retcon`, { sequence, ...(note ? { text: note } : {}) },
   ),
+  /** Takes the story back to before `fromSequence`, which starts a turn: what came since is wiped, but for edits and deletions of earlier lines. */
+  wipe: (worldId: string, fromSequence: number) => request<{ sequence: number }>("POST", `${at(worldId)}/wipe`, { fromSequence }),
   branch: (worldId: string, through: number, id: string, name?: string) => request<WorldView>(
     "POST", `${at(worldId)}/branch`, { through, id, ...(name ? { name } : {}) },
   ),

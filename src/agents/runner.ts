@@ -7,6 +7,7 @@ import type { AdventureEvent, Command, JudgmentInput, RulingInput, WorldState } 
 import { BELIEF_EVENTS, beliefsOf, rankRecollections, recallQuery } from "../memory.ts";
 import { availableActions, perceive } from "../perception.ts";
 import { attemptProblem, checkRuling, inScene, isNarratable, isNpc, MENTAL_EVENTS, PRIVATE_EVENTS } from "../rules.ts";
+import { liveEvents } from "../wipes.ts";
 import {
   beliefLines, describeEvent, eventLine, goalLines, NO_DIRECTION, renderCharacterPrompt, renderJudgingPrompt,
   renderNarrationPrompt, renderNpcPrompt, renderRulingPrompt,
@@ -300,9 +301,9 @@ export async function recallContext(
   };
 }
 
-/** Recent events, enough for turn order, stalls, agendas, and pending steering. */
+/** Recent events, enough for turn order, stalls, agendas, and pending steering; none the director wiped. */
 async function schedulingEvents(engine: AdventureEngine, worldId: string, state: WorldState): Promise<AdventureEvent[]> {
-  return engine.getEvents(worldId, Math.max(0, state.revision - 500), 500);
+  return liveEvents(await engine.getEvents(worldId, Math.max(0, state.revision - 500), 500));
 }
 
 /** The director's pending steering for an actor, and for a character, the pressure of a stalled debate. */
@@ -544,8 +545,9 @@ export class TurnRunner {
     ));
   }
 
+  /** The latest `count` events, less any the director wiped. */
   private async recentEvents(worldId: string, state: WorldState, count: number): Promise<AdventureEvent[]> {
-    return this.engine.getEvents(worldId, Math.max(0, state.revision - count), count);
+    return liveEvents(await this.engine.getEvents(worldId, Math.max(0, state.revision - count), count));
   }
 
   /** The scheduler's choice among those who can act and are not muted. */

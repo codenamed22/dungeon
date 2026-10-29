@@ -1,5 +1,6 @@
 import type { TraceRecord, TraceTask } from "../engine.ts";
 import type { AdventureEvent, WorldState } from "../model.ts";
+import { liveEvents } from "../wipes.ts";
 import { turnHistory } from "./schedule.ts";
 
 /** Outcomes where the agent answered, but its proposal was malformed or rejected. */
@@ -55,8 +56,13 @@ function sumLatency(traces: TraceRecord[]): number {
   return traces.reduce((total, trace) => total + trace.latencyMs, 0);
 }
 
-/** Summarizes how a session went, from its events and the traces of its model calls. */
-export function computeMetrics(events: AdventureEvent[], traces: TraceRecord[], state: WorldState): MetricsReport {
+/**
+ * Summarizes how a session went, from its events and the traces of its model
+ * calls. Wiped events don't count; the model calls that made them do, since
+ * they were paid for.
+ */
+export function computeMetrics(allEvents: AdventureEvent[], traces: TraceRecord[], state: WorldState): MetricsReport {
+  const events = liveEvents(allEvents);
   const turns = turnHistory(events, state);
   const characterTurns = turns.filter((turn) => !turn.npc);
   const turnsByActor: Record<string, number> = {};

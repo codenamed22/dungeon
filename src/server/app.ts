@@ -13,6 +13,7 @@ import {
 import type { OpenRouterModel } from "../agents/openrouter.ts";
 import { frameOf, judgeSystemPrompt, narratorSystemPrompt, refereeSystemPrompt } from "../agents/prompts.ts";
 import { ProviderConfigError } from "../agents/provider.ts";
+import { Lease } from "../agents/runner.ts";
 import { BUILD_STEP_IDS } from "../creator/steps.ts";
 import { loadSetup, parseSetup, placeholderCast, resolvedModels } from "../agents/setup.ts";
 import type { Setup } from "../agents/setup.ts";
@@ -153,6 +154,8 @@ const bodies = {
   }),
   /** `replacement` rewords the line; otherwise it is withdrawn, with `text` as a correction if given. */
   retcon: z.object({ sequence: z.number(), text: z.string().optional(), replacement: z.string().optional() }),
+  /** Takes the story back to before `fromSequence`, which starts a turn. */
+  wipe: z.object({ fromSequence: z.number() }),
   enter: z.object({ characterId: z.string(), locationId: z.string(), text: z.string().optional() }),
   exit: z.object({ characterId: z.string(), text: z.string().optional() }),
   step: z.object({ actorId: z.string().optional() }),
@@ -682,6 +685,28 @@ export function createApp(options: AppOptions): (request: IncomingMessage, respo
           ...(body.replacement === undefined ? {} : { replacement: body.replacement }),
         });
         return json({ sequence: result.events[0]!.sequence }, 201);
+      }
+      case "POST worlds/:world/wipe": {
+        const body = parseBody(bodies.wipe, await readJson(request));
+        await engine.getWorld(worldId!);
+        if (runs.status(worldId!)?.state === "running" || runs.status(worldId!)?.state === "pausing") {
+          throw new EngineError("WORLD_BUSY", "This world is running; pause it, then wipe");
+        }
+        requireNoEditor(worldId!);
+        // Hold the lease while wiping, so no run elsewhere plays a turn into the old story.
+        const lease = new Lease(engine, worldId!, 30_000);
+        try {
+          await lease.acquire();
+        } catch (error) {
+          if (error instanceof EngineError && error.code === "WORLD_BUSY") throw new EngineError("WORLD_BUSY", "This world is running elsewhere; stop it, then wipe");
+          throw error;
+        }
+        try {
+          const result = await direct(engine, worldId!, { type: "wipe", fromSequence: body.fromSequence });
+          return json({ sequence: result.events[0]!.sequence }, 201);
+        } finally {
+          await lease.release();
+        }
       }
       case "POST worlds/:world/branch": {
         const body = parseBody(bodies.branch, await readJson(request));

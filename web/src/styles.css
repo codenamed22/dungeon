@@ -478,6 +478,8 @@ body.panel-open .app { padding-right: min(420px, 100%); }
 .event.director { background: var(--violet-soft); }
 .event.aside { background: transparent; border: 1px dashed var(--line-strong); color: var(--muted); }
 .event.retracted .words, .event.retracted > div:not(.meta):not(.event-actions) { text-decoration: line-through; opacity: .6; }
+/* Wiped lines are out of the story but still branchable, so they fade rather than disappear. */
+.event.wiped > div:not(.meta):not(.event-actions), .event.wiped .meta > :not(.line-actions):not(.event-menu):not(.tag) { opacity: .45; }
 .event .original { color: var(--muted); font-style: normal; text-decoration: line-through; margin-top: 2px; }
 /* Edit, delete, and branch show on hover or focus, so the story reads clean. */
 .line-actions { margin-left: auto; display: flex; gap: 2px; opacity: 0; transition: opacity .12s; }

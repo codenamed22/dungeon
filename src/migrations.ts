@@ -212,6 +212,18 @@ export const migrations: readonly Migration[] = [
       `);
     },
   },
+  {
+    version: 9,
+    name: "wipes",
+    async up(client, ns) {
+      await client.query(`
+        -- The director's wipes, which every read of what agents perceive checks.
+        -- Queries must use this exact predicate to use the index.
+        CREATE INDEX adventure_events_wipes ON ${ns}.adventure_events (world_id, sequence)
+          WHERE event -> 'data' ->> 'type' = 'wiped';
+      `);
+    },
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = migrations.at(-1)!.version;

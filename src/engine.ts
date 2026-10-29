@@ -14,7 +14,7 @@ import {
 } from "./model.ts";
 import type { AdventureEvent, EventData, WorldState } from "./model.ts";
 import {
-  actorOf, applyEvent, d20, isNarratable, MENTAL_EVENTS, Replayer, resolveCommand, retconAudience as audienceOfRetcon, retractionProblem,
+  actorOf, applyEvent, d20, isNarratable, MENTAL_EVENTS, Replayer, resolveCommand, retconAudience as audienceOfRetcon, retractionProblem, wipeProblem,
 } from "./rules.ts";
 import type { CommittedEvent, Evidence, Roll } from "./rules.ts";
 import { parseStoredEvent } from "./upcast.ts";
@@ -143,19 +143,33 @@ const PAGE_SIZE = 500;
 /** The words of an event's string fields; migration 5 indexes this exact expression. */
 const SEARCH_VECTOR = `jsonb_to_tsvector('english'::regconfig, e.event -> 'data', '["string"]'::jsonb)`;
 
-/** SQL true for an event `e` that a later retcon withdrew; agents never see those. `ns` is the schema. */
-const withdrawn = (ns: string) => `EXISTS (
+/**
+ * SQL true for an event aliased `x` that a wipe took back; agents never see
+ * those. Edits and deletions of lines before the wipe's first event outlive it
+ * (see survivesWipe in wipes.ts). Migration 9 indexes the wipes. `ns` is the schema.
+ */
+const wiped = (ns: string, x: string) => `EXISTS (
+  SELECT 1 FROM ${ns}.adventure_events w
+  WHERE w.world_id = ${x}.world_id AND w.event -> 'data' ->> 'type' = 'wiped' AND w.sequence > ${x}.sequence
+    AND ${x}.sequence >= (w.event -> 'data' ->> 'fromSequence')::bigint
+    AND NOT (${x}.event -> 'data' ->> 'type' = 'retraction'
+      AND (${x}.event -> 'data' ->> 'targetSequence')::bigint < (w.event -> 'data' ->> 'fromSequence')::bigint))`;
+
+/** SQL true for an event aliased `x` (by default `e`) that a later retcon withdrew; agents never see those. */
+const withdrawn = (ns: string, x = "e") => `EXISTS (
   SELECT 1 FROM ${ns}.adventure_events r
-  WHERE r.world_id = e.world_id AND r.sequence > e.sequence
+  WHERE r.world_id = ${x}.world_id AND r.sequence > ${x}.sequence
     AND r.event -> 'data' ->> 'type' = 'retraction'
     AND NOT (r.event -> 'data' ? 'replacement')
-    AND (r.event -> 'data' ->> 'targetSequence')::bigint = e.sequence)`;
+    AND (r.event -> 'data' ->> 'targetSequence')::bigint = ${x}.sequence
+    AND NOT ${wiped(ns, "r")})`;
 
 /** SQL for the latest words the director gave each reworded line of world $1, as rows of (target, words). */
 const rewordings = (ns: string) => `SELECT DISTINCT ON (target) (r.event -> 'data' ->> 'targetSequence')::bigint AS target,
     r.event -> 'data' ->> 'replacement' AS words
   FROM ${ns}.adventure_events r
   WHERE r.world_id = $1 AND r.event -> 'data' ->> 'type' = 'retraction' AND r.event -> 'data' ? 'replacement'
+    AND NOT ${wiped(ns, "r")}
   ORDER BY target, r.sequence DESC`;
 
 /** Lines the director can reword; only these carry text a retcon replaces. */
@@ -369,20 +383,28 @@ export class AdventureEngine {
       if (command.expectedRevision !== state.revision) {
         throw new EngineError("STALE_REVISION", `Expected revision ${command.expectedRevision}; current revision is ${state.revision}`);
       }
-      const audience = command.role === "dm"
-        ? await this.narrationAudience(client, worldId, state, command.action.aboutSequences)
-        : command.role === "director" && command.action.type === "retcon"
-          ? await this.retconAudience(client, worldId, command.action)
+      const recordedAt = new Date().toISOString();
+      let resolved: { committed: CommittedEvent[]; state: WorldState };
+      if (command.role === "director" && command.action.type === "wipe") {
+        resolved = await this.wipe(client, state, command.requestId, command.action.fromSequence, recordedAt);
+      } else {
+        const retcon = command.role === "director" && command.action.type === "retcon"
+          ? await this.retconContext(client, worldId, command.action)
           : undefined;
-      const evidence = command.role === "character" && command.note
-        ? await this.evidence(client, worldId, command.note.evidence)
-        : new Map<number, Evidence>();
-      const resolved = resolveCommand(state, command, {
-        roll: this.roll,
-        recordedAt: new Date().toISOString(),
-        evidence: (sequence) => evidence.get(sequence),
-        ...(audience ? { audience } : {}),
-      });
+        const audience = command.role === "dm"
+          ? await this.narrationAudience(client, worldId, state, command.action.aboutSequences)
+          : retcon?.audience;
+        const evidence = command.role === "character" && command.note
+          ? await this.evidence(client, worldId, command.note.evidence)
+          : new Map<number, Evidence>();
+        resolved = resolveCommand(state, command, {
+          roll: this.roll,
+          recordedAt,
+          evidence: (sequence) => evidence.get(sequence),
+          ...(audience ? { audience } : {}),
+          ...(retcon ? { target: retcon.target, alsoWithdraw: retcon.alsoWithdraw } : {}),
+        });
+      }
       await this.insertCommitted(client, resolved.committed);
       await client.query(
         `UPDATE ${this.namespace}.adventure_worlds SET state = $2::jsonb, revision = $3 WHERE id = $1`,
@@ -431,6 +453,7 @@ export class AdventureEngine {
          AND ($4::text[] IS NULL OR e.event -> 'data' ->> 'type' = ANY($4::text[]))
          AND NOT (e.event -> 'data' ->> 'type' = ANY($5::text[]))
          AND NOT ${withdrawn(this.namespace)}
+         AND NOT ${wiped(this.namespace, "e")}
        ORDER BY e.sequence DESC LIMIT $3`,
       [worldId, characterId, limit, filter.types ?? null, filter.exclude ?? []],
     );
@@ -483,6 +506,7 @@ export class AdventureEngine {
          WHERE e.world_id = $1 AND e.sequence < $4
            AND NOT (e.event -> 'data' ->> 'type' = ANY($5::text[]))
            AND NOT ${withdrawn(this.namespace)}
+           AND NOT ${wiped(this.namespace, "e")}
            AND ((edits.words IS NULL AND ${SEARCH_VECTOR} @@ q.query)
              OR (edits.words IS NOT NULL AND to_tsvector('english', edits.words) @@ q.query))
          ORDER BY rank DESC, e.sequence DESC
@@ -760,7 +784,8 @@ export class AdventureEngine {
     const cited = new Map<number, Evidence>();
     if (sequences.length === 0) return cited;
     const events = await client.query(
-      `SELECT event FROM ${this.namespace}.adventure_events WHERE world_id = $1 AND sequence = ANY($2::bigint[])`,
+      `SELECT e.event FROM ${this.namespace}.adventure_events e
+       WHERE e.world_id = $1 AND e.sequence = ANY($2::bigint[]) AND NOT ${wiped(this.namespace, "e")}`,
       [worldId, sequences],
     );
     const perceivers = await client.query(
@@ -814,9 +839,11 @@ export class AdventureEngine {
       throw new EngineError("INVALID_ACTION", "Narration must reference committed events in ascending order");
     }
     const events = await client.query(
-      `SELECT event FROM ${this.namespace}.adventure_events WHERE world_id = $1 AND sequence = ANY($2::bigint[])`,
+      `SELECT e.event FROM ${this.namespace}.adventure_events e
+       WHERE e.world_id = $1 AND e.sequence = ANY($2::bigint[]) AND NOT ${wiped(this.namespace, "e")}`,
       [worldId, sequences],
     );
+    if (events.rows.length !== sequences.length) throw new EngineError("INVALID_ACTION", "Narration can't refer to a wiped line");
     if (events.rows.some((row) => !isNarratable(parseStoredEvent(row.event).data.type))) {
       throw new EngineError("INVALID_ACTION", "Only committed character actions can be narrated");
     }
@@ -824,27 +851,116 @@ export class AdventureEngine {
     return [...new Set(sequences.flatMap((sequence) => stored.get(sequence) ?? []))].sort();
   }
 
-  /** Checks that a retcon may change its target, and returns who perceives it (see retconAudience in rules.ts). */
-  private async retconAudience(
+  /**
+   * Checks that a retcon may change its target, and returns its context: the
+   * target, who perceives the retcon (see retconAudience in rules.ts), and, for
+   * a deletion, the notes that go with the line: live notes whose evidence is
+   * then all deleted.
+   */
+  private async retconContext(
     client: PoolClient,
     worldId: string,
     action: { sequence: number; text?: string | undefined; replacement?: string | undefined },
-  ): Promise<string[]> {
+  ): Promise<{ target: AdventureEvent; audience: string[]; alsoWithdraw: number[] }> {
     const { sequence } = action;
-    const target = await client.query(
-      `SELECT event FROM ${this.namespace}.adventure_events WHERE world_id = $1 AND sequence = $2 AND sequence > 1`,
+    const ns = this.namespace;
+    const found = await client.query(
+      `SELECT e.event, ${wiped(ns, "e")} AS wiped, ${withdrawn(ns)} AS withdrawn FROM ${ns}.adventure_events e
+       WHERE e.world_id = $1 AND e.sequence = $2 AND e.sequence > 1`,
       [worldId, sequence],
     );
-    const earlier = await client.query(
-      `SELECT 1 FROM ${this.namespace}.adventure_events
-       WHERE world_id = $1 AND event -> 'data' ->> 'type' = 'retraction' AND NOT (event -> 'data' ? 'replacement')
-         AND (event -> 'data' ->> 'targetSequence')::bigint = $2`,
-      [worldId, sequence],
+    const row = found.rows[0];
+    const target = row ? parseStoredEvent(row.event) : undefined;
+    let laterChange = false;
+    if (target?.data.type === "goal_set") {
+      const later = await client.query(
+        `SELECT 1 FROM ${ns}.adventure_events g
+         WHERE g.world_id = $1 AND g.sequence > $2 AND g.event -> 'data' ->> 'type' = 'goal_set' AND g.event -> 'data' ->> 'goalId' = $3
+           AND NOT ${wiped(ns, "g")} AND NOT ${withdrawn(ns, "g")} LIMIT 1`,
+        [worldId, sequence, target.data.goalId],
+      );
+      laterChange = (later.rowCount ?? 0) > 0;
+    }
+    const problem = retractionProblem(target, {
+      replacement: action.replacement,
+      text: action.text,
+      withdrawn: row?.withdrawn === true,
+      wiped: row?.wiped === true,
+      laterChange,
+    });
+    if (problem || !target) throw new EngineError("INVALID_ACTION", `Cannot retcon #${sequence}: ${problem}`);
+    const audience = [...audienceOfRetcon(action, (await this.deliveries(client, worldId, sequence, sequence)).get(sequence) ?? [])];
+    return { target, audience, alsoWithdraw: action.replacement === undefined ? await this.notesFrom(client, worldId, sequence) : [] };
+  }
+
+  /** Live notes citing the line at `sequence` whose other evidence is all deleted already, oldest first. */
+  private async notesFrom(client: PoolClient, worldId: string, sequence: number): Promise<number[]> {
+    const ns = this.namespace;
+    const notes = await client.query(
+      `SELECT n.sequence, n.event -> 'data' -> 'evidence' AS evidence FROM ${ns}.adventure_events n
+       WHERE n.world_id = $1 AND n.event -> 'data' ->> 'type' = 'belief_noted' AND n.event -> 'data' -> 'evidence' @> $2::jsonb
+         AND NOT ${wiped(ns, "n")} AND NOT ${withdrawn(ns, "n")}
+       ORDER BY n.sequence`,
+      [worldId, JSON.stringify([sequence])],
     );
-    const event = target.rows[0] ? parseStoredEvent(target.rows[0].event) : undefined;
-    const problem = retractionProblem(event, action.replacement, (earlier.rowCount ?? 0) > 0);
-    if (problem) throw new EngineError("INVALID_ACTION", `Cannot retcon #${sequence}: ${problem}`);
-    return [...audienceOfRetcon(action, (await this.deliveries(client, worldId, sequence, sequence)).get(sequence) ?? [])];
+    if (notes.rows.length === 0) return [];
+    const cited = [...new Set(notes.rows.flatMap((note) => note.evidence as number[]))].filter((other) => other !== sequence);
+    const gone = await client.query(
+      `SELECT e.sequence FROM ${ns}.adventure_events e
+       WHERE e.world_id = $1 AND e.sequence = ANY($2::bigint[]) AND ${withdrawn(ns)}`,
+      [worldId, cited],
+    );
+    const deleted = new Set([sequence, ...gone.rows.map((other) => Number(other.sequence))]);
+    return notes.rows
+      .filter((note) => (note.evidence as number[]).every((other) => deleted.has(other)))
+      .map((note) => Number(note.sequence));
+  }
+
+  /**
+   * Resolves a wipe by replaying the world's history through it, so the state
+   * it stores is the one replay, branching and import arrive at.
+   */
+  private async wipe(
+    client: PoolClient,
+    state: WorldState,
+    requestId: string,
+    from: number,
+    recordedAt: string,
+  ): Promise<{ committed: CommittedEvent[]; state: WorldState }> {
+    const ns = this.namespace;
+    const worldId = state.id;
+    const found = await client.query(
+      `SELECT sequence, event FROM ${ns}.adventure_events WHERE world_id = $1 AND sequence IN ($2::bigint, $2::bigint - 1)`,
+      [worldId, from],
+    );
+    const at = (sequence: number) => {
+      const row = found.rows.find((entry) => Number(entry.sequence) === sequence);
+      return row ? parseStoredEvent(row.event) : undefined;
+    };
+    const within = await client.query(
+      `SELECT 1 FROM ${ns}.adventure_events w
+       WHERE w.world_id = $1 AND w.event -> 'data' ->> 'type' = 'wiped'
+         AND (w.event -> 'data' ->> 'fromSequence')::bigint <= $2::bigint AND $2::bigint < w.sequence LIMIT 1`,
+      [worldId, from],
+    );
+    const before = at(from - 1);
+    const problem = wipeProblem(at(from), before, (within.rowCount ?? 0) > 0);
+    if (problem || !before) throw new EngineError("INVALID_ACTION", `Cannot wipe from #${from}: ${problem}`);
+    const replayer = new Replayer();
+    for await (const page of this.eventPages(client, worldId)) for (const event of page) replayer.apply(event);
+    // The story goes back to the time of the line before the wipe, the time it then stands at.
+    const event: AdventureEvent = {
+      v: EVENT_FORMAT,
+      worldId,
+      sequence: state.revision + 1,
+      requestId,
+      source: "director",
+      recordedAt,
+      elapsedSeconds: before.elapsedSeconds,
+      data: { type: "wiped", fromSequence: from },
+    };
+    const perceivers = replayer.apply(event);
+    return { committed: [{ event, perceivers }], state: replayer.state! };
   }
 
   private async deliveries(

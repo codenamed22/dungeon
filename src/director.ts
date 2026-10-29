@@ -21,6 +21,7 @@ import { exportDesign, exportSave, importWorldFile, worldFileName } from "./exch
 import type { Belief } from "./memory.ts";
 import { EngineError, rulesOf } from "./model.ts";
 import type { AdventureEvent, WorldState } from "./model.ts";
+import { liveEvents } from "./wipes.ts";
 
 const USAGE = `Usage: npm run director -- <command> [options]
 
@@ -301,7 +302,7 @@ async function stage(engine: AdventureEngine, worldId: string, entering: boolean
 
 async function transcript(engine: AdventureEngine, worldId: string, last: number): Promise<void> {
   const state = await engine.getWorld(worldId);
-  for (const event of await engine.getEvents(worldId, Math.max(0, state.revision - last), last)) {
+  for (const event of liveEvents(await engine.getEvents(worldId, Math.max(0, state.revision - last), last))) {
     console.log(eventLine(event, state));
   }
 }

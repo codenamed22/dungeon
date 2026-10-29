@@ -171,6 +171,8 @@ export function describeEvent(event: AdventureEvent, state: WorldState, viewerId
       return data.text === undefined
         ? `${stamp} The director deleted #${data.targetSequence}.`
         : `${stamp} Retcon of #${data.targetSequence} by the director: ${data.text}`;
+    case "wiped":
+      return `${stamp} The director wiped #${data.fromSequence}–#${event.sequence - 1}; the story went back to before #${data.fromSequence}.`;
     case "steering":
       return `${stamp} Director, outside the story, to ${data.targetId === undefined ? "everyone" : nameIn(state.characters, data.targetId)}: ${data.text}`;
     case "narration":

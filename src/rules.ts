@@ -13,6 +13,7 @@ import {
   validateWorld,
   worldStateSchema,
 } from "./model.ts";
+import { survivesWipe } from "./wipes.ts";
 import type {
   AdventureEvent,
   Character,
@@ -56,8 +57,8 @@ const NARRATABLE = new Set<EventData["type"]>([
   "character_exited",
 ]);
 
-/** Events nobody perceives: hidden consequences, and the director's out-of-fiction steering. */
-const HIDDEN = new Set<EventData["type"]>(["threat_armed", "threat_disarmed", "steering"]);
+/** Events nobody perceives: hidden consequences, the director's out-of-fiction steering, and wipes. */
+const HIDDEN = new Set<EventData["type"]>(["threat_armed", "threat_disarmed", "steering", "wiped"]);
 /** Someone coming into the scene or leaving it. */
 const STAGING = new Set<EventData["type"]>(["character_entered", "character_exited"]);
 /**
@@ -68,8 +69,8 @@ const STAGING = new Set<EventData["type"]>(["character_entered", "character_exit
 const OUTCOME_PARTS = new Set<EventData["type"]>([
   "discovery", "threat_armed", "threat_disarmed", "story_ended", "character_entered", "character_exited",
 ]);
-/** What may still happen once the story has ended: words about what already happened. */
-const AFTER_THE_END = new Set<EventData["type"]>(["narration", "retraction"]);
+/** What may still happen once the story has ended: words about what already happened, and a wipe back to before it. */
+const AFTER_THE_END = new Set<EventData["type"]>(["narration", "retraction", "wiped"]);
 
 /** Thoughts: a character's notes and goals, never a perception of the world. */
 export const MENTAL_EVENTS: readonly EventData["type"][] = ["belief_noted", "goal_set"];
@@ -109,17 +110,64 @@ const LINE_LIMITS: Partial<Record<EventData["type"], number>> = {
  * reworded again and again, until it is withdrawn. An introduced event that
  * changed routes may be reworded, but not withdrawn: branching undoes it.
  */
-export function retractionProblem(target: AdventureEvent | undefined, replacement: string | undefined, withdrawn: boolean): string | null {
+export function retractionProblem(
+  target: AdventureEvent | undefined,
+  options: {
+    replacement?: string | undefined;
+    text?: string | undefined;
+    /** Whether a retcon already withdrew the target. */
+    withdrawn: boolean;
+    /** Whether a wipe took the target back. */
+    wiped: boolean;
+    /** For a goal change: whether a later change to the same goal stands. */
+    laterChange: boolean;
+  },
+): string | null {
   if (!target) return "No such event";
+  if (options.wiped) return "That line was wiped";
   const data = target.data;
-  const limit = LINE_LIMITS[data.type];
-  if (limit === undefined) return "Only narration, speech, and introduced events can be retconned; branch the world to undo anything else";
-  if (withdrawn) return "That line was already withdrawn";
-  if (replacement === undefined && data.type === "introduced" && data.lockedRoutes.length + data.unlockedRoutes.length > 0) {
-    return "This introduced event changed the world; branch the world to undo it";
+  if (isMental(data.type)) {
+    if (options.replacement !== undefined) return "Only narration, speech, and introduced events can be reworded";
+    if (options.text !== undefined) return "A thought is deleted without a correction";
+    if (options.withdrawn) return "That line was already withdrawn";
+    if (options.laterChange) return "This goal changed later; delete that change first, or wipe from before it";
+    return null;
   }
-  if (replacement !== undefined && replacement.length > limit) return `The new words are longer than this line may be (${limit} characters)`;
+  const limit = LINE_LIMITS[data.type];
+  if (limit === undefined) return "Only narration, speech, introduced events, notes, and goals can be retconned; wipe from before it to undo anything else";
+  if (options.withdrawn) return "That line was already withdrawn";
+  if (options.replacement === undefined && data.type === "introduced" && data.lockedRoutes.length + data.unlockedRoutes.length > 0) {
+    return "This introduced event changed the world; wipe from before it to undo it";
+  }
+  if (options.replacement !== undefined && options.replacement.length > limit) return `The new words are longer than this line may be (${limit} characters)`;
   return null;
+}
+
+/**
+ * Why the story can't be wiped from `from`, or null. `before` is the event
+ * just before it: a wipe starts where a turn does, as a branch ends where one
+ * does. `withinWipe` is whether an earlier wipe's range holds it, wiped or
+ * outliving the wipe: going back to there would bring that wipe's lines back.
+ */
+export function wipeProblem(from: AdventureEvent | undefined, before: AdventureEvent | undefined, withinWipe: boolean): string | null {
+  if (!from || from.sequence < 2) return "No such line";
+  if (withinWipe) return "That line is within an earlier wipe; wipe from before it";
+  if (from.data.type === "wiped") return "A wipe can't be wiped; branch from a wiped line to play it again";
+  if (from.data.type === "retraction") return "An edit or deletion outlives a wipe; wipe from the line after it";
+  if (before?.requestId === from.requestId) return `#${from.sequence} is in the middle of a turn; wipe from the turn's first line`;
+  return null;
+}
+
+/** Takes back a goal change the director deleted: an adoption removes the goal, and a fulfilment or abandonment reopens it. */
+function undoGoal(state: WorldState, data: Extract<EventData, { type: "goal_set" }>): void {
+  const actor = storedActor(state, data.actorId);
+  if (data.status === "adopted") {
+    actor.goals = (actor.goals ?? []).filter((goal) => goal.id !== data.goalId);
+    return;
+  }
+  const goal = actor.goals?.find((entry) => entry.id === data.goalId);
+  if (goal?.status !== data.status) corrupt("A deleted goal change does not match the goal");
+  goal.status = "adopted";
 }
 
 /** Who perceives a retcon: whoever perceived its target when it carries a correction, and nobody otherwise. */
@@ -597,16 +645,20 @@ export function resolveCommand(
     recordedAt: string;
     /** Who perceived the events a narration describes, or the event a retcon withdraws. */
     audience?: readonly string[];
+    /** The event a retcon targets, which the caller checked with retractionProblem. */
+    target?: AdventureEvent;
+    /** Notes a deletion takes with it: those whose evidence is then all withdrawn. */
+    alsoWithdraw?: readonly number[];
     /** The earlier events a note cites; a note may cite only events its writer perceived. */
     evidence?: EvidenceLookup;
   },
 ): { committed: CommittedEvent[]; state: WorldState } {
-  if (state.endedWith !== undefined && command.role !== "dm" && !(command.role === "director" && command.action.type === "retcon")) {
+  if (state.endedWith !== undefined && command.role !== "dm" && !(command.role === "director" && ["retcon", "wipe"].includes(command.action.type))) {
     invalid("The story has ended. Branch the world from before the ending to play on");
   }
   const committed: CommittedEvent[] = [];
   let current = state;
-  const append = (source: EventSource, data: EventData) => {
+  const append = (source: EventSource, data: EventData, audience = options.audience, target?: AdventureEvent) => {
     const event: AdventureEvent = {
       v: EVENT_FORMAT,
       worldId: current.id,
@@ -617,8 +669,8 @@ export function resolveCommand(
       elapsedSeconds: current.elapsedSeconds + eventDuration(data),
       data,
     };
-    const perceivers = perceiversOf(current, data, options.audience);
-    current = applyEvent(current, event);
+    const perceivers = perceiversOf(current, data, audience);
+    current = applyEvent(current, event, target);
     committed.push({ event, perceivers });
   };
   const done = () => ({ committed, state: current });
@@ -688,7 +740,11 @@ export function resolveCommand(
         targetSequence: action.sequence,
         ...(action.text === undefined ? {} : { text: action.text }),
         ...(action.replacement === undefined ? {} : { replacement: action.replacement }),
-      });
+      }, options.audience, options.target);
+      for (const note of options.alsoWithdraw ?? []) append("director", { type: "retraction", targetSequence: note }, []);
+    } else if (action.type === "wipe") {
+      // A wipe needs the whole history, so the engine replays it (see Replayer).
+      throw new Error("A wipe is resolved by replaying the world's history");
     } else if (action.type === "enter") {
       const arriving = current.characters.find((character) => character.id === action.characterId);
       if (!arriving) invalid(`Unknown character: ${action.characterId}`);
@@ -824,6 +880,7 @@ function expectedSource(
     case "steering":
     case "introduced":
     case "retraction":
+    case "wiped":
       return "director";
     case "utterance":
     case "character_moved":
@@ -871,7 +928,8 @@ function setRoutes(state: WorldState, refs: readonly RouteRef[], locked: boolean
   }
 }
 
-export function applyEvent(previous: WorldState | undefined, event: AdventureEvent): WorldState {
+/** Applies one event to the state. A retraction of a goal change needs its `target`, which it takes back. */
+export function applyEvent(previous: WorldState | undefined, event: AdventureEvent, target?: AdventureEvent): WorldState {
   const data = event.data;
   if (data.type === "world_created") {
     if (
@@ -894,8 +952,9 @@ export function applyEvent(previous: WorldState | undefined, event: AdventureEve
   if (!sources.includes(event.source)) corrupt(`This ${data.type} event must come from the ${sources.join(" or ")}`);
   if (previous.endedWith !== undefined && !AFTER_THE_END.has(data.type)) corrupt("Nothing happens after the story ends");
   // Once the story has ended, the clock stops: threats still due never fire.
+  // A wipe can take the clock back to where a threat is due; the next turn fires it.
   const due = previous.endedWith === undefined ? nextThreat(previous) : undefined;
-  if (due && due.at! <= previous.elapsedSeconds && data.type !== "threat_triggered" && !OUTCOME_PARTS.has(data.type)) {
+  if (due && due.at! <= previous.elapsedSeconds && data.type !== "threat_triggered" && data.type !== "wiped" && !OUTCOME_PARTS.has(data.type)) {
     corrupt(`Threat ${due.id} was due and had to fire first`);
   }
   const state = structuredClone(previous);
@@ -1063,6 +1122,12 @@ export function applyEvent(previous: WorldState | undefined, event: AdventureEve
       break;
     case "retraction":
       if (data.targetSequence < 2 || data.targetSequence >= event.sequence) corrupt("A retcon must withdraw an earlier event");
+      if (target !== undefined && target.sequence !== data.targetSequence) corrupt("A retcon's target does not match");
+      if (target?.data.type === "goal_set") undoGoal(state, target.data);
+      break;
+    case "wiped":
+      // The Replayer takes the state back before applying the wipe itself.
+      if (data.fromSequence < 2 || data.fromSequence >= event.sequence) corrupt("A wipe must start at an earlier event");
       break;
     case "introduced": {
       const problem = introductionProblem(state, data.locationIds, data.lockedRoutes, data.unlockedRoutes);
@@ -1119,29 +1184,58 @@ export function applyEvent(previous: WorldState | undefined, event: AdventureEve
 }
 
 /** Rebuilds state and perceivers from an ordered event history, validating every step. */
+/** What a wipe leaves: the world, its withdrawn lines and last check, and the events it takes back. */
+interface Rewound {
+  state: WorldState;
+  withdrawn: Set<number>;
+  lastCheck: AdventureEvent | undefined;
+  wiped: number[];
+}
+
 export class Replayer {
   state: WorldState | undefined;
+  /** Every event so far, wiped ones included. */
   private readonly history = new Map<number, { event: AdventureEvent; perceivers: string[] }>();
   private lastCheck: AdventureEvent | undefined;
   /** Lines a retcon withdrew, which nothing may change again. */
-  private readonly withdrawn = new Set<number>();
+  private withdrawn = new Set<number>();
+  /** Events a wipe took back, which nothing may refer to again. */
+  private readonly wiped = new Set<number>();
+  /** Each wipe's range, from its first event to the wipe itself. */
+  private readonly wipes: { from: number; at: number }[] = [];
 
   apply(event: AdventureEvent): string[] {
     const data = event.data;
     let audience: string[] | undefined;
+    let target: AdventureEvent | undefined;
     if (data.type === "narration") {
       audience = [];
       for (const sequence of data.aboutSequences) {
-        const target = this.history.get(sequence);
-        if (!target || !isNarratable(target.event.data.type)) corrupt("Narration references an event that cannot be narrated");
-        audience.push(...target.perceivers);
+        const about = this.live(sequence);
+        if (!about || !isNarratable(about.event.data.type)) corrupt("Narration references an event that cannot be narrated");
+        audience.push(...about.perceivers);
       }
     }
     if (data.type === "retraction") {
-      const target = this.history.get(data.targetSequence);
-      const problem = retractionProblem(target?.event, data.replacement, this.withdrawn.has(data.targetSequence));
+      const entry = this.history.get(data.targetSequence);
+      const problem = retractionProblem(entry?.event, {
+        replacement: data.replacement,
+        text: data.text,
+        withdrawn: this.withdrawn.has(data.targetSequence),
+        wiped: this.wiped.has(data.targetSequence),
+        laterChange: entry !== undefined && this.changedLater(entry.event),
+      });
       if (problem) corrupt(`Invalid retcon: ${problem}`);
-      audience = [...retconAudience(data, target!.perceivers)];
+      audience = [...retconAudience(data, entry!.perceivers)];
+      target = entry!.event;
+    }
+    let rewound: Rewound | undefined;
+    if (data.type === "wiped") {
+      const from = data.fromSequence;
+      const within = this.wipes.some((wipe) => wipe.from <= from && from < wipe.at);
+      const problem = wipeProblem(this.history.get(from)?.event, this.history.get(from - 1)?.event, within);
+      if (problem) corrupt(`Invalid wipe: ${problem}`);
+      rewound = this.rewound(from);
     }
     if (data.type === "discovery") {
       const check = this.history.get(event.sequence - 1)?.event;
@@ -1182,12 +1276,63 @@ export class Replayer {
           && check.data.challengeId === when.challengeId && check.data.success === (when.outcome === "success"));
       if (!caused) corrupt("An ending must follow the outcome that reaches it");
     }
-    if (data.type === "check_resolved") this.lastCheck = event;
-    const perceivers = perceiversOf(this.state, data, audience);
-    this.state = applyEvent(this.state, event);
+    // A wipe applies to the world as it was before its first event; nothing changes until the wipe itself checks out.
+    const before = rewound ? { ...rewound.state, revision: event.sequence - 1 } : this.state;
+    const perceivers = perceiversOf(before, data, audience);
+    this.state = applyEvent(before, event, target);
     this.history.set(event.sequence, { event, perceivers });
+    if (rewound && data.type === "wiped") {
+      this.withdrawn = rewound.withdrawn;
+      this.lastCheck = rewound.lastCheck;
+      for (const sequence of rewound.wiped) this.wiped.add(sequence);
+      this.wipes.push({ from: data.fromSequence, at: event.sequence });
+    }
+    if (data.type === "check_resolved") this.lastCheck = event;
     if (data.type === "retraction" && data.replacement === undefined) this.withdrawn.add(data.targetSequence);
     return perceivers;
+  }
+
+  /** An event that may still be referred to: not wiped. */
+  private live(sequence: number): { event: AdventureEvent; perceivers: string[] } | undefined {
+    return this.wiped.has(sequence) ? undefined : this.history.get(sequence);
+  }
+
+  /** For a goal change: whether a later change to the same goal stands. */
+  private changedLater(target: AdventureEvent): boolean {
+    if (target.data.type !== "goal_set") return false;
+    const { goalId } = target.data;
+    for (const { event } of this.history.values()) {
+      if (event.sequence > target.sequence && event.data.type === "goal_set" && event.data.goalId === goalId
+        && !this.wiped.has(event.sequence) && !this.withdrawn.has(event.sequence)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * The world as a wipe from `from` leaves it: the history before it replayed
+   * afresh, then the edits and deletions made since to lines before it, which
+   * outlive the wipe. Everything else since is wiped.
+   */
+  private rewound(from: number): Rewound {
+    const fresh = new Replayer();
+    const wiped: number[] = [];
+    for (const { event } of this.history.values()) if (event.sequence < from) fresh.apply(event);
+    for (const { event } of this.history.values()) {
+      if (event.sequence < from || this.wiped.has(event.sequence)) continue;
+      if (!survivesWipe(event.data, from)) {
+        wiped.push(event.sequence);
+        continue;
+      }
+      // An edit changes nothing here; a deletion withdraws its line, and a deleted goal change is taken back again.
+      const data = event.data as Extract<EventData, { type: "retraction" }>;
+      if (data.replacement === undefined) fresh.withdrawn.add(data.targetSequence);
+      const goal = this.history.get(data.targetSequence)!.event.data;
+      if (goal.type === "goal_set") {
+        fresh.state = structuredClone(fresh.state!);
+        undoGoal(fresh.state, goal);
+      }
+    }
+    return { state: fresh.state!, withdrawn: fresh.withdrawn, lastCheck: fresh.lastCheck, wiped };
   }
 
   /** The event before this one in its request, past any entrances and exits the engine staged in between. */
@@ -1239,7 +1384,7 @@ export class Replayer {
 
   /** A replayed event as a belief may cite it. */
   evidence(sequence: number): Evidence | undefined {
-    const entry = this.history.get(sequence);
+    const entry = this.live(sequence);
     return entry && { type: entry.event.data.type, actorId: actorOf(entry.event.data), perceivers: entry.perceivers };
   }
 }

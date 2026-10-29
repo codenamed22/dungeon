@@ -233,8 +233,8 @@ What you can do:
   limits, cue one character, or pause. On a new Dry Aqueduct world, the
   scripted opening plays eight turns for free, with no model and every die
   showing 15. Nothing runs on its own. When a story reaches an ending, a banner
-  shows its closing text and nothing more can happen; branch from an earlier
-  event to play on.
+  shows its closing text and nothing more can happen; wipe back to before the
+  ending, or branch from an earlier event, to play on.
 - **Watch.** Committed events appear as they happen: speech, narration, checks,
   threats, and the director's own events, each marked with who perceived it and
   whether it was private, hidden, or out of the story. Switch the feed to one
@@ -253,9 +253,16 @@ What you can do:
   nobody is told; the feed marks it edited and shows the original on request.
   Delete one (an introduced event only if it changed no way): those who heard
   it forget it, and nobody is told, unless you say what really happened, which
-  reaches them as a correction. Branch a world after any turn, into a new world
-  with the same history and setup, to try another course; the original is
-  untouched.
+  reaches them as a correction; notes taken only from it go with it. Delete a
+  character's note, or the latest change to one of their goals, and they forget
+  it: an adopted goal is dropped, and a fulfilled or abandoned one is pursued
+  again. **Wipe from here** takes the story back to before a line's turn: the
+  world returns to how it was then, and that line and everything after it
+  leave every agent's memory, except your edits and deletions of earlier lines,
+  which stay. The wiped lines stay in the feed, faded, and play goes on in the
+  same world. Branch a world after any turn, into a new world with the same
+  history and setup, to try another course; the original is untouched.
+  Branching from a wiped line brings its timeline back as a new world.
 - **Story editor.** The **Editor** button in a world's header opens an AI that
   reads the story so far and says what's working and what isn't, citing lines
   by number: dialogue that repeats itself, a story that isn't moving, someone
@@ -291,10 +298,13 @@ chosen from a bar at the bottom, and run controls and event actions open as
 sheets. The web director only listens on this machine, so a phone cannot reach
 it until it is deployed with a login.
 
-Edits and deletions never remove anything: the original stays in the log, and
-a `retraction` event records the change (its `replacement` for an edit, its
-`text` for a correction). They cannot undo a change of state (a move, a check,
-an item handed over); branch from before it instead.
+Edits, deletions, and wipes never remove anything: the original stays in the
+log, a `retraction` event records an edit or deletion (its `replacement` for an
+edit, its `text` for a correction), and a `wiped` event records a wipe (its
+`fromSequence`). An edit or deletion cannot undo a change of state (a move, a
+check, an item handed over); wipe from before it instead. A wipe starts at the
+first line of a turn, outside any earlier wipe, and can't be wiped itself;
+branch from a wiped line to play it again.
 
 The server's HTTP API, under `/api`, is what the interface uses:
 
@@ -309,7 +319,7 @@ The server's HTTP API, under `/api`, is what the interface uses:
 | `GET /api/worlds/:id/memory/:character?search=TEXT` | Their goals, beliefs, discoveries, and search results. |
 | `GET /api/worlds/:id/traces`, `GET /api/worlds/:id/report` | Model calls; session metrics. |
 | `PUT /api/worlds/:id/setup` | Save personas and models. |
-| `POST /api/worlds/:id/mute`, `steer`, `introduce`, `enter`, `exit`, `retcon`, `branch` | Director actions. `enter` takes `{characterId, locationId, text?}`, `exit` takes `{characterId, text?}`. `retcon` takes `{sequence, replacement}` to edit a line, `{sequence}` to delete it, or `{sequence, text}` to delete it with a correction. |
+| `POST /api/worlds/:id/mute`, `steer`, `introduce`, `enter`, `exit`, `retcon`, `wipe`, `branch` | Director actions. `enter` takes `{characterId, locationId, text?}`, `exit` takes `{characterId, text?}`. `retcon` takes `{sequence, replacement}` to edit a line, `{sequence}` to delete it, or `{sequence, text}` to delete it with a correction. `wipe` takes `{fromSequence}`, and is refused with `WORLD_BUSY` while the world runs, here or elsewhere, or the story editor works on it. |
 | `GET /api/worlds/:id/editor`, `POST /api/worlds/:id/editor` | The story editor's chat and whether it is working; run it on `{message, pass, model?}`, streamed like the AI creator. A `review` reads and proposes; a `fix` makes the changes the message approves. Refused with `WORLD_BUSY` while a run holds the world; runs are refused while it works. |
 | `POST /api/worlds/:id/step`, `run`, `rehearse`, `pause` | Start or pause a run in the background; its progress arrives on the stream. |
 | `GET /api/adventures`, `GET /api/models?q=TEXT` | Built-in adventures; OpenRouter models, with whether each can call tools. |
@@ -611,8 +621,8 @@ command narrates committed actions: `{ role: "dm", requestId, expectedRevision,
 action: { type: "narrate", aboutSequences: [12], text } }`. A director command
 steers: `{ role: "director", requestId, expectedRevision, action: { type:
 "steer", text, targetId } }`, with `targetId` optional. Other director actions
-are `introduce`, `retcon`, `enter` (`characterId`, `locationId`, optional
-`text`), and `exit` (`characterId`, optional `text`).
+are `introduce`, `retcon`, `wipe` (`fromSequence`), `enter` (`characterId`,
+`locationId`, optional `text`), and `exit` (`characterId`, optional `text`).
 
 Provide a unique request ID for each new command. Retry an uncertain request with
 **exactly the same input**, including its original expected revision. A retry
@@ -670,8 +680,8 @@ A world's optional `endings` each wait on a challenge's success or failure, or
 on a threat. When one is met, the engine appends `story_ended` after the
 outcome, perceived by everyone conscious. A threat that came due while the
 action took its time fires before that ending, since it happened first, and
-its own ending wins if it has one. From then on only narration and retcons
-commit, and threats still due never fire; replay accepts an ending only
+its own ending wins if it has one. From then on only narration, retcons, and
+wipes commit, and threats still due never fire; replay accepts an ending only
 directly after its cause (past any entrances and exits the same threat caused).
 
 A character with `away: true` is away from the scene. `character_entered` and
@@ -709,7 +719,14 @@ event's location, plus the actor. A move is perceived at both ends.
   messages.
 - An edit or deletion is a `retraction` event; the original stays in the log.
   Queries for an agent's view leave out a deleted event and give an edited one
-  its newest words, and memory search matches the new words, never the old. A branch copies a world's events up
+  its newest words, and memory search matches the new words, never the old.
+  Deleting a line also deletes, in the same command, live notes whose evidence
+  is then all deleted. A wipe is a `wiped` event that takes back every event
+  from its `fromSequence` up to itself, except retractions of earlier lines.
+  The engine resolves one by replaying the world's history through it, so its
+  stored state is the one replay, branching, and import arrive at; queries for
+  an agent's view, and the turn runner, metrics, and the story editor, leave
+  wiped events out. Migration 9 indexes wipe events. A branch copies a world's events up
   to the chosen point into a new world, replays and validates them, and copies
   their perceivers, the retry receipts of the turns it includes, and the saved
   setup.
@@ -785,7 +802,21 @@ Integration coverage includes:
   it is deleted, and refuses anything after a deletion, words too long for the
   line, a note with new words, and an edit of a move; edits and quiet
   deletions reach nobody, a note reaches whoever heard the line; a full save
-  keeps edits.
+  keeps edits. A note, or a goal's latest change, can be deleted quietly but
+  not reworded; deleting a goal's adoption drops it and deleting its
+  fulfilment brings it back; and deleting a line takes the notes resting only
+  on it.
+- **Wipes:** a wipe takes the world back to before a turn, keeping edits and
+  deletions of earlier lines (a goal's deletion too), and play goes on; replay
+  refuses one from the first line, the middle of a turn, a retcon, a wiped line
+  or anywhere within an earlier wipe, or a wipe, or at the wrong time, and
+  refuses narration, a retcon, or a note that refers to a wiped line; a wipe
+  within a wipe goes with it, and wiping past an ending lets play go on; over
+  HTTP, wiped lines leave agents' prompts and memory search, replay matches
+  the snapshot, a turn plays after a wipe, a full save keeps it, branching from
+  a wiped line brings it back, and it is refused while a run elsewhere or the
+  story editor holds the world; the story editor's story leaves wiped lines
+  out.
 - **Entrances and exits:** the director, a threat, a working ruling, and an NPC
   leaving on its turn each stage someone, seen only where it happens; someone
   away cannot act, be addressed, receive items, or be hurt, and the scheduler

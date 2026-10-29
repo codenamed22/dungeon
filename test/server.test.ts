@@ -284,6 +284,104 @@ test("web director integration", {
       assert.deepEqual(await engine.replayWorld("edited"), (await call("GET", "/api/worlds/edited")).body.world);
     });
 
+    await t.test("deleting a line takes the notes resting only on it, and notes and goals can be deleted, quietly", async () => {
+      await create("forgotten");
+      assert.equal((await call("POST", "/api/worlds/forgotten/rehearse", {})).status, 202);
+      await settled("forgotten");
+      type Line = { sequence: number; type: string; perceivers: string[]; data: { text?: string; targetSequence?: number } };
+      const events = (await call("GET", "/api/worlds/forgotten/events")).body as Line[];
+      const warning = events.find((event) => event.type === "utterance" && event.data.text?.includes("Few come back"))!;
+      const note = events.find((event) => event.type === "belief_noted")!; // Mira's, from the warning alone
+      const goal = events.find((event) => event.type === "goal_set")!; // Bram's, to get the bars open
+      const prompt = async (id: string) => (await call("GET", `/api/worlds/forgotten/agents/${id}`)).body.prompt as string;
+      assert.match(await prompt("mira"), /Few who go in come back out/);
+      assert.match(await prompt("bram"), /Get those bars open for Mira/);
+      const retcon = (body: Record<string, unknown>) => call("POST", "/api/worlds/forgotten/retcon", body);
+      assert.equal((await retcon({ sequence: note.sequence, replacement: "Safe enough." })).status, 422, "a note isn't reworded");
+      assert.equal((await retcon({ sequence: note.sequence, text: "Tamsin said nothing." })).status, 422, "a thought goes without a correction");
+
+      const deleted = await retcon({ sequence: warning.sequence });
+      assert.equal(deleted.status, 201, JSON.stringify(deleted.body));
+      const added = (await call("GET", `/api/worlds/forgotten/events?after=${deleted.body.sequence - 1}`)).body as Line[];
+      assert.deepEqual(added.map((event) => [event.type, event.data.targetSequence, event.perceivers]), [
+        ["retraction", warning.sequence, []], ["retraction", note.sequence, []],
+      ]);
+      assert.doesNotMatch(await prompt("mira"), /Few who go in come back out/);
+      assert.equal((await retcon({ sequence: note.sequence })).status, 422, "the note went with its line");
+
+      assert.equal((await retcon({ sequence: goal.sequence })).status, 201);
+      const world = (await call("GET", "/api/worlds/forgotten")).body.world as { characters: { id: string; goals?: unknown[] }[] };
+      assert.deepEqual(world.characters.find((character) => character.id === "bram")?.goals ?? [], []);
+      assert.doesNotMatch(await prompt("bram"), /Get those bars open/);
+      assert.deepEqual(await engine.replayWorld("forgotten"), world);
+    });
+
+    await t.test("wiping takes the story back to before a turn and out of every agent's memory, and a branch from a wiped line brings it back", async () => {
+      await create("wiped");
+      assert.equal((await call("POST", "/api/worlds/wiped/rehearse", {})).status, 202);
+      await settled("wiped");
+      type Line = { sequence: number; requestId: string; type: string; elapsedSeconds: number; line: string; data: { text?: string; actorId?: string } };
+      const events = (await call("GET", "/api/worlds/wiped/events")).body as Line[];
+      const at = (sequence: number) => events[sequence - 1]!;
+      // From Bram's first turn: "Slow feet, sure feet", his move to the bars, and his goal. Later, the bars open.
+      const from = events.find((event) => event.type === "utterance" && event.data.actorId === "bram")!.sequence;
+      const opened = events.find((event) => event.type === "check_resolved")!.sequence;
+      const memory = async (search: string) => (
+        (await call("GET", `/api/worlds/wiped/memory/mira?search=${encodeURIComponent(search)}`)).body.matches as { sequence: number }[]
+      ).map((match) => match.sequence);
+      const prompt = async () => (await call("GET", "/api/worlds/wiped/agents/mira")).body.prompt as string;
+      assert.ok((await memory("rust flakes")).length > 0);
+      assert.match(await prompt(), /Rust flakes away/);
+      const wipe = (fromSequence: number) => call("POST", "/api/worlds/wiped/wipe", { fromSequence });
+
+      assert.ok(await engine.acquireLease("wiped", "elsewhere", 60_000));
+      assert.equal((await wipe(from)).status, 409, "a run elsewhere holds the world");
+      await engine.releaseLease("wiped", "elsewhere");
+      const wiped = await wipe(from);
+      assert.equal(wiped.status, 201, JSON.stringify(wiped.body));
+      assert.equal(wiped.body.sequence, events.length + 1);
+      type World = { revision: number; elapsedSeconds: number; characters: { id: string; locationId: string; goals?: unknown[] }[]; challenges: { id: string; resolved: boolean }[] };
+      const world = (await call("GET", "/api/worlds/wiped")).body.world as World;
+      const bram = world.characters.find((character) => character.id === "bram")!;
+      assert.deepEqual([bram.locationId, bram.goals ?? []], ["camp", []]);
+      assert.equal(world.challenges.find((challenge) => challenge.id === "pry-bars")?.resolved, false);
+      assert.equal(world.elapsedSeconds, at(from - 1).elapsedSeconds);
+      assert.deepEqual(await engine.replayWorld("wiped"), world);
+      const [line] = (await call("GET", `/api/worlds/wiped/events?after=${events.length}`)).body as Line[];
+      assert.match(line!.line, new RegExp(`The director wiped #${from}–#${events.length}; the story went back to before #${from}\\.`));
+      const seen = await prompt();
+      assert.doesNotMatch(seen, /Rust flakes away|Slow feet/);
+      assert.match(seen, /Few come back out/, "what came before stays");
+      assert.deepEqual(await memory("rust flakes"), []);
+
+      const midTurn = events.find((event, index) => index > 0 && event.sequence < from && events[index - 1]!.requestId === event.requestId)!;
+      for (const [sequence, why] of [[from, "already wiped"], [wiped.body.sequence, "a wipe"], [midTurn.sequence, "mid-turn"], [1, "the start"], [9999, "no such line"]] as const) {
+        assert.equal((await wipe(sequence)).status, 422, why);
+      }
+      assert.equal((await call("POST", "/api/worlds/wiped/retcon", { sequence: from })).status, 422, "a wiped line can't be deleted");
+
+      // Play goes on from there.
+      provider = new ScriptedProvider([say("Back to the bars, then.")]);
+      assert.equal((await call("POST", "/api/worlds/wiped/step", { actorId: "bram" })).status, 202);
+      assert.equal((await settled("wiped")).turns, 1);
+      const [said] = (await call("GET", `/api/worlds/wiped/events?after=${wiped.body.sequence}`)).body as Line[];
+      assert.deepEqual([said?.type, said?.data.text], ["utterance", "Back to the bars, then."]);
+      const now = (await call("GET", "/api/worlds/wiped")).body.world as World;
+      assert.deepEqual(await engine.replayWorld("wiped"), now);
+
+      // A branch from a wiped line plays it again; a full save keeps the wipe.
+      let end = opened;
+      while (events[end]?.requestId === at(end).requestId) end += 1;
+      const branch = await call("POST", "/api/worlds/wiped/branch", { through: end, id: "unwiped" });
+      assert.equal(branch.status, 201, JSON.stringify(branch.body));
+      assert.equal((branch.body.world as World).challenges.find((challenge) => challenge.id === "pry-bars")?.resolved, true);
+      const save = await (await fetch(`${base}/api/worlds/wiped/export?kind=save`)).text();
+      const copy = await call("POST", "/api/import?worldId=wiped-copy", JSON.parse(save));
+      assert.equal(copy.status, 201, JSON.stringify(copy.body));
+      assert.deepEqual({ ...copy.body.world.world, id: "wiped" }, now);
+      assert.deepEqual(await memory("rust flakes"), []);
+    });
+
     await t.test("steps and runs play in the background, one at a time, and pause before anything uncommitted lands", async () => {
       await create("played");
       provider = new ScriptedProvider([say("Hm.")]);

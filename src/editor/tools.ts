@@ -12,6 +12,7 @@ import type { OperationResult } from "../creator/operations.ts";
 import type { AdventureEngine, TurnResult } from "../engine.ts";
 import { EngineError } from "../model.ts";
 import type { AdventureEvent, Command, WorldSeed, WorldState } from "../model.ts";
+import { liveEvents } from "../wipes.ts";
 
 // The story editor's tools. The review reads the story and proposes changes;
 // the fix, once the director approves, makes them: agent changes to the
@@ -84,7 +85,7 @@ async function eventsBetween(engine: AdventureEngine, worldId: string, from: num
 
 /**
  * The story in the director's view, one numbered line per event, with the
- * director's edits in place and deletions marked. The newest lines when
+ * director's edits in place and deletions marked, and wiped lines left out. The newest lines when
  * `newest`, else the earliest, from `from` to `to`, up to `lines` lines and
  * about `chars` characters.
  */
@@ -96,7 +97,7 @@ export async function storyLines(
   const state = await engine.getWorld(worldId);
   const to = Math.min(options.to ?? state.revision, state.revision);
   const from = Math.max(2, options.from ?? (options.newest ? to - options.lines * 3 : 2));
-  const events = await eventsBetween(engine, worldId, 1, state.revision);
+  const events = liveEvents(await eventsBetween(engine, worldId, 1, state.revision));
   const words = new Map<number, string>();
   const deleted = new Set<number>();
   for (const event of events) {
@@ -271,10 +272,10 @@ const tools: readonly EditorTool[] = [
       line: z.number().int().min(2).describe("The line's #number"),
       words: z.string().trim().min(1).max(1000).describe("The whole line as it should read, without quotation marks around it"),
     }), true, (context, { line, words }) => directed(context, { type: "retcon", sequence: line, replacement: unquoted(words) }, (sequence) => `Reworded #${line} (#${sequence}).`)),
-  tool("delete_line", "Delete a line of speech, narration, or an introduced event that changed no ways. Agents who heard it forget it; with a note, "
-    + "they are told what really happened instead.", z.strictObject({
+  tool("delete_line", "Delete a line of speech, narration, or an introduced event that changed no ways, or a character's note or latest change to a "
+    + "goal. Agents who heard it forget it, and so do notes taken only from it; with a note, they are told what really happened instead.", z.strictObject({
     line: z.number().int().min(2).describe("The line's #number"),
-    note: z.string().trim().min(1).max(500).optional().describe("What really happened, told to those who heard it; leave out to delete it quietly"),
+    note: z.string().trim().min(1).max(500).optional().describe("What really happened, told to those who heard it; leave out to delete it quietly, as notes and goals always are"),
   }), true, (context, { line, note }) => directed(context, { type: "retcon", sequence: line, ...(note ? { text: note } : {}) },
     (sequence) => (note ? `Withdrew #${line}, with a correction (#${sequence}).` : `Deleted #${line} (#${sequence}).`))),
 ];

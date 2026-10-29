@@ -397,6 +397,8 @@ export const commandSchema = z.discriminatedUnion("role", [
       z.strictObject({ type: z.literal("enter"), characterId: id, locationId: id, text: introducedText.optional() }),
       /** Sends someone in the scene away from it. */
       z.strictObject({ type: z.literal("exit"), characterId: id, text: introducedText.optional() }),
+      /** Takes the story back to before a turn, wiping it and everything after. */
+      z.strictObject({ type: z.literal("wipe"), fromSequence: positiveCount }),
     ]),
   }),
 ]);
@@ -524,6 +526,13 @@ export const eventSchema = z.strictObject({
       text: retconText.optional(),
       replacement: replacementText.optional(),
     }).refine((data) => data.text === undefined || data.replacement === undefined, oneChange),
+    /**
+     * The director taking the story back to before `fromSequence`: that event
+     * and everything up to this one are wiped, except edits and deletions made
+     * meanwhile to earlier lines. The wiped events stay in the log; the world is
+     * as it was before them, and nobody perceives them, or the wipe, again.
+     */
+    z.strictObject({ type: z.literal("wiped"), fromSequence: positiveCount }),
     z.strictObject({
       type: z.literal("narration"),
       aboutSequences: sequenceList,
