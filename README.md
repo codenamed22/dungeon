@@ -13,7 +13,8 @@ Phase 4 added world progression: timed threats that interrupt travel and waiting
 hidden delayed consequences of checks, NPCs with agendas of their own, a bounded
 response to stalled debate, and director steering outside the story.
 Phase 5 adds the web director: set up the agents, watch the conversation live,
-and direct it by steering, introducing events, retconning, and branching.
+and direct it by steering, introducing events, editing or deleting lines, and
+branching, or have the story editor review the story and fix what isn't working.
 Stories need not be fantasy: each world chooses dice or a referee AI's judgment,
 its own stats and health (or none), its pace, and optional endings. A friendship
 story, an incident on call, and a country-house mystery are bundled alongside
@@ -247,11 +248,42 @@ What you can do:
   conscious characters there, and optionally blocking or opening a way.
   Send a character away from the scene, or bring one in at a place you choose,
   with optional words for how it looks; whoever is there sees it happen.
-  Retcon a narration, a line of speech, or an introduced event that changed no
-  route: those who perceived it receive a correction, and their agents no
-  longer see the original, in their transcript or in search. Branch a world
-  after any turn, into a new world with the same history and setup, to try
-  another course; the original is untouched.
+  Edit a narration, a line of speech, or an introduced event: those who heard
+  it remember the new words instead, in their transcript and in search, and
+  nobody is told; the feed marks it edited and shows the original on request.
+  Delete one (an introduced event only if it changed no way): those who heard
+  it forget it, and nobody is told, unless you say what really happened, which
+  reaches them as a correction. Branch a world after any turn, into a new world
+  with the same history and setup, to try another course; the original is
+  untouched.
+- **Story editor.** The **Editor** button in a world's header opens an AI that
+  reads the story so far and says what's working and what isn't, citing lines
+  by number: dialogue that repeats itself, a story that isn't moving, someone
+  out of character, a narrator who says too much. It proposes changes as a
+  checklist and changes nothing until you approve: untick what you don't want,
+  add a note, and **Make N changes**. It can rewrite personas, the premise,
+  the narrator's style and the pace, steer, introduce events, bring characters
+  in or send them away, and edit or delete lines. Places, challenges, items,
+  and endings are fixed once a world is playing, so for those it says what to
+  change in the design instead. Agent changes can be undone while the setup is
+  unchanged since; its story changes are lines in the story, which you can
+  edit or delete like any other. It works only on a world that isn't running
+  (the panel offers to pause it), and no run starts while it works. A message
+  is limited to 10 model calls, 30 tool calls, and 0.50 credits (or 300,000
+  tokens), and uses the AI creator's model unless you pick another. Its chat
+  is kept per world; downloads and branches leave it out.
+- **Download and import.** The World tab downloads the world as a file: its
+  **Design** (the world as written, before any play, with its cast and
+  models), to edit or share, or a **Full save** (every event, the setup, and
+  mutes), to play on elsewhere, such as moving a world from this machine to
+  the deployed site. A draft's Review step downloads its design. **Import** on
+  Your worlds opens either kind: a design as a new draft, whose models the
+  world starts with; a full save as a new world, under the file's world ID or
+  the next free one, replayed and checked first, so an edited or damaged
+  history is refused. A full save holds the characters' private memories. It
+  leaves out model-call traces (so the report shows no cost for earlier
+  turns), retry receipts, and the AI creator's and story editor's chats. Imports may be up to 16
+  MiB; the CLI has no limit.
 
 The interface works on a phone-sized screen, with a dark theme that follows
 the system (or the header's switch): the world page shows one pane at a time,
@@ -259,9 +291,10 @@ chosen from a bar at the bottom, and run controls and event actions open as
 sheets. The web director only listens on this machine, so a phone cannot reach
 it until it is deployed with a login.
 
-Retcons never delete anything: the original stays in the log, struck through,
-and a `retraction` event records the correction. A retcon cannot undo a change
-of state (a move, a check, an item handed over); branch from before it instead.
+Edits and deletions never remove anything: the original stays in the log, and
+a `retraction` event records the change (its `replacement` for an edit, its
+`text` for a correction). They cannot undo a change of state (a move, a check,
+an item handed over); branch from before it instead.
 
 The server's HTTP API, under `/api`, is what the interface uses:
 
@@ -276,12 +309,15 @@ The server's HTTP API, under `/api`, is what the interface uses:
 | `GET /api/worlds/:id/memory/:character?search=TEXT` | Their goals, beliefs, discoveries, and search results. |
 | `GET /api/worlds/:id/traces`, `GET /api/worlds/:id/report` | Model calls; session metrics. |
 | `PUT /api/worlds/:id/setup` | Save personas and models. |
-| `POST /api/worlds/:id/mute`, `steer`, `introduce`, `enter`, `exit`, `retcon`, `branch` | Director actions. `enter` takes `{characterId, locationId, text?}`, `exit` takes `{characterId, text?}`. |
+| `POST /api/worlds/:id/mute`, `steer`, `introduce`, `enter`, `exit`, `retcon`, `branch` | Director actions. `enter` takes `{characterId, locationId, text?}`, `exit` takes `{characterId, text?}`. `retcon` takes `{sequence, replacement}` to edit a line, `{sequence}` to delete it, or `{sequence, text}` to delete it with a correction. |
+| `GET /api/worlds/:id/editor`, `POST /api/worlds/:id/editor` | The story editor's chat and whether it is working; run it on `{message, pass, model?}`, streamed like the AI creator. A `review` reads and proposes; a `fix` makes the changes the message approves. Refused with `WORLD_BUSY` while a run holds the world; runs are refused while it works. |
 | `POST /api/worlds/:id/step`, `run`, `rehearse`, `pause` | Start or pause a run in the background; its progress arrives on the stream. |
 | `GET /api/adventures`, `GET /api/models?q=TEXT` | Built-in adventures; OpenRouter models, with whether each can call tools. |
 | `GET /api/drafts`, `POST /api/drafts` | List drafts; create one, blank or from `{adventureId}`. |
 | `GET /api/drafts/:id`, `PUT /api/drafts/:id`, `DELETE /api/drafts/:id` | A draft with its problems and chat; replace it from `{draft, expectedRevision}`, refused with `STALE_REVISION` if it changed since. |
 | `POST /api/drafts/:id/publish` | Create the world from `{worldId, expectedRevision}`; a retry after a failure resumes. |
+| `GET /api/worlds/:id/export?kind=design\|save`, `GET /api/drafts/:id/export` | Download a world file: a design (the default), or a world's full save. |
+| `POST /api/import?worldId=ID` | Import a world file, sent as the body: a design becomes a draft, a save a world (under `worldId`, or the file's world ID made unique). |
 | `POST /api/drafts/:id/assistant` | Run the AI creator on `{message, model?, step?, expectedRevision}`, streamed as one JSON event per line. `step` (`story`, `places`, `characters`, `challenges`, or `endings`) runs that step of a guided build, with only its tools. Other writes to the draft get `DRAFT_BUSY` until it finishes. |
 | `GET /api/creator` | The AI creator's default model, and whether a key is set. |
 
@@ -313,6 +349,8 @@ npm run director -- <command> [--world ID] [--schema NAME] [--model ID]
 | `report` | Session metrics: turns per actor, turns to the first action, the longest run without an action, threats fired, steering requests, rulings, invalid-proposal rate, and cost and latency per turn. |
 | `rehearse` | Play a scripted opening, with no model and every die showing 15, into its own world (`aqueduct-rehearsal`). |
 | `models [TEXT]` | List OpenRouter models whose ID or name contains TEXT, with output support, prices, context, and reasoning efforts. Needs no key. |
+| `export [--full] [--draft ID] [--out FILE]` | Save the world's design to a file, or with `--full` its whole history, setup, and mutes; `--draft` saves a draft's design. The file is named after the world unless `--out` names it. |
+| `import FILE [--world ID]` | Import a world file: a design becomes a new draft, a save a new world under `--world` or the file's world ID (made unique if taken), replayed and checked first. |
 
 Nothing runs on its own: turns happen only on `step` or `run`. A run stops at
 its turn, model-call, token, or cost limit; after three consecutive failed
@@ -666,9 +704,12 @@ event's location, plus the actor. A move is perceived at both ends.
   sample world matches upcast Phase 1 copies, so they keep resuming.
 - Traces are diagnostic records, not canonical history.
 - Migration 6 adds `adventure_setups`: each world's saved personas and models.
-  It is director state beside the world, like mutes, never events.
-- A retcon is a `retraction` event; the retracted event stays in the log, and
-  queries for an agent's view leave it out. A branch copies a world's events up
+  It is director state beside the world, like mutes, never events. Migration 8
+  adds `world_editor_chats`: each world's story editor chat, the last 100
+  messages.
+- An edit or deletion is a `retraction` event; the original stays in the log.
+  Queries for an agent's view leave out a deleted event and give an edited one
+  its newest words, and memory search matches the new words, never the old. A branch copies a world's events up
   to the chosen point into a new world, replays and validates them, and copies
   their perceivers, the retry receipts of the turns it includes, and the saved
   setup.
@@ -740,6 +781,11 @@ Integration coverage includes:
   nudged, then must act, and a run that still stalls stops; an NPC with an
   agenda speaks up once time has passed; and a threat that strikes mid-run
   reaches only those it hits, is never narrated, and replays exactly.
+- **Edits and deletions:** replay lets a line be edited again and again until
+  it is deleted, and refuses anything after a deletion, words too long for the
+  line, a note with new words, and an edit of a move; edits and quiet
+  deletions reach nobody, a note reaches whoever heard the line; a full save
+  keeps edits.
 - **Entrances and exits:** the director, a threat, a working ruling, and an NPC
   leaving on its turn each stage someone, seen only where it happens; someone
   away cannot act, be addressed, receive items, or be hurt, and the scheduler
@@ -750,7 +796,8 @@ Integration coverage includes:
   writes; creates worlds from adventures and seeds; validates and saves setups;
   streams committed events and resumes after the last one received; introduced
   events reach only the characters present, and steering stays out of memory;
-  a retcon hides the original from those who heard it and corrects them; step,
+  an edit reaches agents as the new words and a deletion as nothing, with no
+  correction, while a deletion with a note corrects those who heard it; step,
   run, cue, pause, and `WORLD_BUSY`; the scripted opening, only on a new Dry
   Aqueduct world, which the world view reports as `rehearsable`; a step that
   ends the story, after which steering is refused; branching, only where a turn ends, with history and setup;
@@ -767,3 +814,8 @@ Integration coverage includes:
   creator streams its work, saves each round and its chat, keeps partial work
   when the browser leaves, blocks other writes while it works, and can be undone
   at the revision it produced, but not after a later change.
+- **Story editor:** a review can only read and propose, and a write is refused;
+  a fix makes the approved changes, saving agent changes once a round and
+  committing story changes as it goes; it streams its work, keeps a chat per
+  world, and keeps what it did when stopped; it and a run never overlap,
+  whether the run is here or in the CLI.

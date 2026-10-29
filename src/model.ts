@@ -44,6 +44,9 @@ const threatText = z.string().trim().min(1).max(MAX_THREAT_LENGTH);
 const steeringText = z.string().trim().min(1).max(MAX_STEERING_LENGTH);
 const introducedText = z.string().trim().min(1).max(MAX_INTRODUCED_LENGTH);
 const retconText = z.string().trim().min(1).max(MAX_RETCON_LENGTH);
+/** New words for an edited line; each kind of line keeps its own limit (see retractionProblem). */
+const replacementText = z.string().trim().min(1).max(Math.max(MAX_SPEECH_LENGTH, MAX_NARRATION_LENGTH, MAX_INTRODUCED_LENGTH));
+const oneChange = { message: "A retcon either rewords a line or withdraws it with a note, not both" };
 const sequenceList = z.array(positiveCount).min(1).max(20);
 const routeRef = z.strictObject({ fromId: id, destinationId: id });
 const itemGrant = z.strictObject({ itemId: id, quantity: positiveCount.max(1000) });
@@ -362,8 +365,9 @@ export const commandSchema = z.discriminatedUnion("role", [
    * The director's commands. Steering is out of fiction: it asks one character,
    * or the whole party, to reconsider. An introduced event is in the fiction:
    * something happens where the director says, and whoever is there perceives it.
-   * A retcon withdraws an earlier narration, utterance, or text-only introduced
-   * event, with a correction for those who perceived it.
+   * A retcon changes an earlier line: narration, speech, or an introduced
+   * event. With `replacement` it rewords the line; otherwise it withdraws it,
+   * silently or with `text`, a correction for those who perceived it.
    */
   z.strictObject({
     role: z.literal("director"),
@@ -386,8 +390,9 @@ export const commandSchema = z.discriminatedUnion("role", [
       z.strictObject({
         type: z.literal("retcon"),
         sequence: positiveCount,
-        text: retconText,
-      }),
+        text: retconText.optional(),
+        replacement: replacementText.optional(),
+      }).refine((action) => action.text === undefined || action.replacement === undefined, oneChange),
       /** Brings someone away from the scene into it, at a place; `text` says how it looks. */
       z.strictObject({ type: z.literal("enter"), characterId: id, locationId: id, text: introducedText.optional() }),
       /** Sends someone in the scene away from it. */
@@ -507,11 +512,18 @@ export const eventSchema = z.strictObject({
     z.strictObject({ type: z.literal("character_entered"), characterId: id, locationId: id, text: introducedText.optional() }),
     z.strictObject({ type: z.literal("character_exited"), characterId: id, locationId: id, text: introducedText.optional() }),
     /**
-     * A director's retcon: the target did not happen as told. It reaches the
-     * target's perceivers, whose agents no longer see the target. Compensating,
-     * never an edit: the target stays in the log.
+     * A director's retcon of an earlier line, which stays in the log as it was.
+     * With `replacement`, the line is reworded: agents see the new words in its
+     * place, and nobody perceives the retcon itself. Otherwise the line is
+     * withdrawn, and agents no longer see it; `text`, a correction, reaches
+     * whoever perceived it, and without one nobody perceives the retcon.
      */
-    z.strictObject({ type: z.literal("retraction"), targetSequence: positiveCount, text: retconText }),
+    z.strictObject({
+      type: z.literal("retraction"),
+      targetSequence: positiveCount,
+      text: retconText.optional(),
+      replacement: replacementText.optional(),
+    }).refine((data) => data.text === undefined || data.replacement === undefined, oneChange),
     z.strictObject({
       type: z.literal("narration"),
       aboutSequences: sequenceList,

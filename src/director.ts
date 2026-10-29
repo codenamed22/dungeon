@@ -1,3 +1,4 @@
+import { readFile, writeFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { castForWorld } from "./adventures/index.ts";
 import { REHEARSAL_ROLL, REHEARSAL_TURNS, rehearsalScript } from "./adventures/rehearsal.ts";
@@ -16,6 +17,7 @@ import type { RunReport, StepOutcome } from "./agents/runner.ts";
 import { loadSetup, providerForSetup } from "./agents/setup.ts";
 import { openConfiguredEngine } from "./config.ts";
 import type { AdventureEngine, EngineOptions } from "./engine.ts";
+import { exportDesign, exportSave, importWorldFile, worldFileName } from "./exchange.ts";
 import type { Belief } from "./memory.ts";
 import { EngineError, rulesOf } from "./model.ts";
 import type { AdventureEvent, WorldState } from "./model.ts";
@@ -44,6 +46,11 @@ Commands:
   report             Session metrics: turns, invalid proposals, rulings, cost, latency
   rehearse           Play a scripted opening, with no model and fixed dice, into its own world
   models [TEXT]      List OpenRouter models, or only those whose ID or name contains TEXT
+  export             Save the world's design (its starting world, cast, and models) to a file;
+                     --full saves its whole history to play on elsewhere; --draft ID saves a
+                     draft's design; --out FILE (default ID.design.json or ID.save.json)
+  import FILE        A design becomes a new draft; a save becomes a new world, under --world ID
+                     or else the file's own ID (made unique if taken)
 
 Options:
   --world ID         World to use (default aqueduct-adventure; rehearse uses aqueduct-rehearsal)
@@ -74,6 +81,8 @@ function parseCommandLine() {
         at: { type: "string" },
         text: { type: "string" },
         full: { type: "boolean" },
+        draft: { type: "string" },
+        out: { type: "string" },
         all: { type: "boolean" },
         help: { type: "boolean", short: "h" },
       },
@@ -407,7 +416,7 @@ async function main(): Promise<void> {
   }
   const known = [
     "init", "step", "cue", "mute", "unmute", "steer", "enter", "exit", "run", "show", "transcript", "view", "memory", "traces", "report",
-    "rehearse", "models",
+    "rehearse", "models", "export", "import",
   ];
   if (!known.includes(command)) throw new UsageError(`Unknown command: ${command}\n\n${USAGE}`);
   if (command === "models") {
@@ -426,6 +435,7 @@ async function main(): Promise<void> {
   if (command === "cue" && rest.length !== 1) throw new UsageError("cue needs exactly one character ID");
   if ((command === "enter" || command === "exit") && rest.length !== 1) throw new UsageError(`${command} needs exactly one character ID`);
   if (command === "unmute" && rest.length === 0 && !values.all) throw new UsageError("unmute needs character IDs, or --all");
+  if (command === "import" && rest.length !== 1) throw new UsageError("import needs exactly one file");
   // The API key is checked before the database is touched; the models come from the world's setup unless --model overrides them.
   const playing = command === "step" || command === "run" || command === "cue";
   if (playing) openRouterSettingsFromEnv(process.env, values.model);
@@ -507,9 +517,39 @@ async function main(): Promise<void> {
       case "rehearse":
         await rehearse(engine, worldId);
         break;
+      case "export": {
+        const file = values.full
+          ? await exportSave(engine, worldId)
+          : await exportDesign(engine, values.draft === undefined ? { worldId } : { draftId: values.draft });
+        const out = values.out ?? worldFileName(file);
+        await writeFile(out, JSON.stringify(file, null, file.kind === "design" ? 2 : undefined));
+        console.log(file.kind === "save" ? `Saved ${file.world.id}'s ${file.events.length} events to ${out}.` : `Saved the design of ${file.draft.seed.name} to ${out}.`);
+        break;
+      }
+      case "import": {
+        const result = await importWorldFile(engine, await readJsonFile(rest[0]!), { worldId: values.world });
+        console.log(result.kind === "design"
+          ? `Created draft ${result.draft.id}; open /create/${result.draft.id} in the web director.`
+          : `Created world ${result.world.id} at revision ${result.world.revision}.`);
+        break;
+      }
     }
   } finally {
     await engine.close();
+  }
+}
+
+async function readJsonFile(file: string): Promise<unknown> {
+  let text: string;
+  try {
+    text = await readFile(file, "utf8");
+  } catch (problem) {
+    throw new UsageError(`Can't read ${file}: ${(problem as Error).message}`);
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new UsageError(`${file} isn't a world file: it isn't JSON.`);
   }
 }
 

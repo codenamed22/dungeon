@@ -2,7 +2,9 @@ import { z } from "zod";
 import type { AdventureEngine } from "../engine.ts";
 import { EngineError, parseInput } from "../model.ts";
 import type { WorldState } from "../model.ts";
-import { DEFAULT_OPENROUTER_MODEL, OpenRouterProvider, openRouterSettingsFromEnv, REASONING_EFFORTS } from "./openrouter.ts";
+import { modelSetupSchema } from "./models.ts";
+import type { ModelSetup } from "./models.ts";
+import { DEFAULT_OPENROUTER_MODEL, OpenRouterProvider, openRouterSettingsFromEnv } from "./openrouter.ts";
 import { castProblems, castSchema } from "./prompts.ts";
 import type { Cast } from "./prompts.ts";
 
@@ -10,17 +12,8 @@ import type { Cast } from "./prompts.ts";
 // narrator sounds, and which models play each role. It is director state,
 // stored beside the world, never part of the fiction.
 
-const modelId = z.string().trim().min(1).max(200);
-const effort = z.enum([...REASONING_EFFORTS, "default"]);
-
-/** Models per role; anything left out falls back to the environment, then to the default model. */
-export const modelSetupSchema = z.strictObject({
-  character: modelId.optional(),
-  dm: modelId.optional(),
-  characterEffort: effort.optional(),
-  dmEffort: effort.optional(),
-});
-export type ModelSetup = z.infer<typeof modelSetupSchema>;
+export { modelSetupSchema };
+export type { ModelSetup };
 
 export const setupSchema = z.strictObject({
   cast: castSchema,

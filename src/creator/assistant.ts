@@ -1,53 +1,24 @@
-import type { ChatReply } from "../agents/openrouter.ts";
+import { runToolLoop } from "../agents/assistant-loop.ts";
+import type { AssistantLimits, AssistantUsage, ChatModel, LoopEvent, ToolLine } from "../agents/assistant-loop.ts";
 import { creatorSystemPrompt, frameOf } from "../agents/prompts.ts";
-import { ProviderError } from "../agents/provider.ts";
-import type { ModelUsage } from "../agents/provider.ts";
 import { draftProblems } from "./operations.ts";
 import type { Draft, DraftProblem } from "./operations.ts";
 import { creatorExamples, creatorToolDefinitions, runCreatorTool } from "./tools.ts";
-import type { ToolOutcome } from "./tools.ts";
 import type { BuildStepId } from "./steps.ts";
 
-// The AI creator's loop for one message from the director: the model calls
-// tools, sees their results, and calls more, until it replies or a limit stops
-// it. Each round's changes are saved before the next, so stopping keeps them.
+// The AI creator's loop for one message from the director (see
+// assistant-loop.ts). Each round's changes to the draft are saved before the
+// next, so stopping keeps them.
 
-export interface ChatModel {
-  readonly model: string;
-  complete(messages: readonly unknown[], tools: readonly unknown[], signal?: AbortSignal): Promise<ChatReply>;
-}
-
-export interface CreatorLimits {
-  /** Model calls for one message. */
-  maxRounds: number;
-  maxToolCalls: number;
-  /** Credits for one message, when the provider reports cost. */
-  maxCost: number;
-  /** Input and output tokens for one message: the cap that holds when cost is not reported. */
-  maxTokens: number;
-}
+export type { ChatModel, ToolLine };
+export type CreatorLimits = AssistantLimits;
+export type CreatorUsage = AssistantUsage;
 
 export const CREATOR_LIMITS: CreatorLimits = { maxRounds: 16, maxToolCalls: 60, maxCost: 0.5, maxTokens: 400_000 };
 
-export interface CreatorUsage {
-  calls: number;
-  inputTokens: number;
-  outputTokens: number;
-  /** Credits spent; null if any call did not report its cost. */
-  cost: number | null;
-}
-
-export interface ToolLine {
-  name: string;
-  summary: string;
-  ok: boolean;
-}
-
 export type CreatorEvent =
-  | { type: "text"; text: string }
-  | ({ type: "tool" } & ToolLine)
-  | { type: "draft"; draft: Draft; revision: number; problems: DraftProblem[] }
-  | { type: "usage"; usage: CreatorUsage };
+  | LoopEvent
+  | { type: "draft"; draft: Draft; revision: number; problems: DraftProblem[] };
 
 export interface CreatorRun {
   draft: Draft;
@@ -113,112 +84,25 @@ export async function runCreator(options: {
   /** Saves the draft after a round of tool calls changed it, and returns its new revision. */
   save(draft: Draft): Promise<number>;
 }): Promise<CreatorRun> {
-  const { chat, signal, onEvent } = options;
-  const limits = options.limits ?? CREATOR_LIMITS;
-  const { step } = options;
-  const messages = conversation(options.draft, options.history, options.message, step);
-  const definitions = creatorToolDefinitions(step);
-  const usage: CreatorUsage = { calls: 0, inputTokens: 0, outputTokens: 0, cost: 0 };
-  const tools: ToolLine[] = [];
-  // Text that comes with tool calls is progress, shown as it streams; the reply is what the model says once it is done.
-  let reply = "";
+  const { step, onEvent } = options;
   let draft = options.draft;
-  let toolCalls = 0;
-  let stopped: string | undefined;
-  let error: string | undefined;
-
-  const count = (spent: ModelUsage) => {
-    usage.calls += 1;
-    usage.inputTokens += spent.inputTokens;
-    usage.outputTokens += spent.outputTokens;
-    usage.cost = usage.cost === null || spent.cost === undefined ? null : usage.cost + spent.cost;
-    onEvent({ type: "usage", usage: { ...usage } });
-  };
-
-  try {
-    for (let round = 1; ; round += 1) {
-      if (signal?.aborted) {
-        stopped = "Stopped.";
-        break;
-      }
-      if (round > limits.maxRounds) {
-        stopped = `Stopped after ${limits.maxRounds} model calls, the limit for one message, before it finished.`;
-        break;
-      }
-      const answer = await chat.complete(messages, definitions, signal);
-      count(answer.usage);
-      const text = answer.content?.trim();
-      if (text) onEvent({ type: "text", text });
-      if (answer.toolCalls.length === 0) {
-        reply = text ?? "";
-        break;
-      }
-      messages.push(answer.message ?? {
-        role: "assistant",
-        content: answer.content,
-        tool_calls: answer.toolCalls.map((call) => ({ id: call.id, type: "function", function: { name: call.name, arguments: call.arguments } })),
-      });
-      // The calls run in order. One that failed runs again once the rest have,
-      // since it may refer to something a later call in the same reply added.
-      const outcomes: (ToolOutcome | undefined)[] = [];
-      for (const call of answer.toolCalls) {
-        if (toolCalls >= limits.maxToolCalls) {
-          stopped = `Stopped at ${limits.maxToolCalls} tool calls, the limit for one message.`;
-          outcomes.push(undefined);
-          continue;
-        }
-        toolCalls += 1;
-        const outcome = runCreatorTool(draft, call.name, call.arguments, step);
-        draft = outcome.draft;
-        outcomes.push(outcome);
-      }
-      for (let progress = true; progress;) {
-        progress = false;
-        for (const [index, call] of answer.toolCalls.entries()) {
-          if (outcomes[index]?.ok !== false) continue;
-          const again = runCreatorTool(draft, call.name, call.arguments, step);
-          if (!again.ok) continue;
-          outcomes[index] = again;
-          draft = again.draft;
-          progress = true;
-        }
-      }
-      let changed = false;
-      for (const [index, call] of answer.toolCalls.entries()) {
-        const outcome = outcomes[index];
-        // Every call needs an answer, or the next request is malformed.
-        if (!outcome) {
-          messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ ok: false, error: "Not run: the tool call limit was reached." }) });
-          continue;
-        }
-        changed ||= outcome.changed;
-        const line = { name: call.name, summary: outcome.summary, ok: outcome.ok };
-        tools.push(line);
-        onEvent({ type: "tool", ...line });
-        messages.push({ role: "tool", tool_call_id: call.id, content: outcome.content });
-      }
-      if (changed) {
-        const revision = await options.save(draft);
-        onEvent({ type: "draft", draft, revision, problems: draftProblems(draft) });
-      }
-      if (stopped) break;
-      if ((usage.cost !== null && usage.cost >= limits.maxCost) || usage.inputTokens + usage.outputTokens >= limits.maxTokens) {
-        stopped = "Stopped at the spending limit for one message.";
-        break;
-      }
-    }
-  } catch (problem) {
-    if (!(problem instanceof ProviderError)) throw problem;
-    if (problem.usage) count(problem.usage);
-    if (problem.kind === "cancelled") stopped = "Stopped.";
-    else error = problem.message;
-  }
-  return {
-    draft,
-    reply,
-    tools,
-    usage,
-    ...(stopped === undefined ? {} : { stopped }),
-    ...(error === undefined ? {} : { error }),
-  };
+  const run = await runToolLoop({
+    chat: options.chat,
+    messages: conversation(options.draft, options.history, options.message, step),
+    definitions: creatorToolDefinitions(step),
+    limits: options.limits ?? CREATOR_LIMITS,
+    signal: options.signal,
+    onEvent,
+    runTool: async (name, argumentsText) => {
+      const outcome = runCreatorTool(draft, name, argumentsText, step);
+      draft = outcome.draft;
+      return outcome;
+    },
+    afterRound: async (changed) => {
+      if (!changed) return;
+      const revision = await options.save(draft);
+      onEvent({ type: "draft", draft, revision, problems: draftProblems(draft) });
+    },
+  });
+  return { draft, ...run };
 }

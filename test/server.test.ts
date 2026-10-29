@@ -237,6 +237,53 @@ test("web director integration", {
       assert.equal(await refused(9999), 422);
     });
 
+    await t.test("a line can be reworded or deleted: agents see the new words or nothing, and nobody gets a correction", async () => {
+      await create("edited");
+      assert.equal((await call("POST", "/api/worlds/edited/rehearse", {})).status, 202);
+      await settled("edited");
+      type Line = { sequence: number; type: string; perceivers: string[]; data: { text?: string }; line: string };
+      const events = (await call("GET", "/api/worlds/edited/events")).body as Line[];
+      const warning = events.find((event) => event.type === "utterance" && event.data.text?.includes("Few come back"))!;
+      const latest = events.findLast((event) => event.type === "utterance" && event.perceivers.includes("mira") && event.sequence !== warning.sequence)!;
+      const prompt = async () => (await call("GET", "/api/worlds/edited/agents/mira")).body.prompt as string;
+      assert.ok((await prompt()).includes(latest.data.text!));
+      const retcon = async (body: Record<string, unknown>) => {
+        const reply = await call("POST", "/api/worlds/edited/retcon", body);
+        if (reply.status !== 201) return reply.status;
+        return ((await call("GET", `/api/worlds/edited/events?after=${reply.body.sequence - 1}`)).body as Line[])[0]!;
+      };
+
+      const first = await retcon({ sequence: warning.sequence, replacement: "The channel floods at dusk, so keep to the ledge." });
+      assert.ok(typeof first === "object");
+      assert.deepEqual(first.perceivers, [], "nobody perceives an edit");
+      assert.match(first.line, new RegExp(`The director reworded #${warning.sequence}: The channel floods at dusk`));
+      const edited = await retcon({ sequence: warning.sequence, replacement: "The channel floods at dawn, so keep to the ledge." });
+      assert.ok(typeof edited === "object", "a line can be reworded again");
+      let seen = await prompt();
+      assert.doesNotMatch(seen, /Few come back out|floods at dusk/);
+      assert.match(seen, /The channel floods at dawn, so keep to the ledge\./);
+      const memory = async (search: string) => (await call("GET", `/api/worlds/edited/memory/mira?search=${encodeURIComponent(search)}`)).body.matches as
+        { sequence: number; line: string; snippet: string | null }[];
+      const found = (await memory("floods dawn ledge")).find((match) => match.sequence === warning.sequence);
+      assert.match(found?.line ?? "", /floods at dawn/);
+      assert.match(found?.snippet ?? "", /«floods»/);
+      assert.equal((await memory("few come back")).some((match) => match.sequence === warning.sequence), false, "the old words are gone from memory");
+
+      const deleted = await retcon({ sequence: latest.sequence });
+      assert.ok(typeof deleted === "object");
+      assert.deepEqual(deleted.perceivers, [], "nobody perceives a plain delete");
+      assert.match(deleted.line, new RegExp(`The director deleted #${latest.sequence}\\.`));
+      seen = await prompt();
+      assert.ok(!seen.includes(latest.data.text!));
+      assert.doesNotMatch(seen, /Correction/);
+
+      assert.equal(await retcon({ sequence: latest.sequence, replacement: "Something else." }), 422, "nothing changes a deleted line");
+      assert.equal(await retcon({ sequence: warning.sequence, replacement: "x".repeat(701) }), 422, "speech keeps its limit");
+      assert.equal(await retcon({ sequence: warning.sequence, replacement: "" }), 400);
+      assert.equal(await retcon({ sequence: warning.sequence, text: "No.", replacement: "Yes." }), 400);
+      assert.deepEqual(await engine.replayWorld("edited"), (await call("GET", "/api/worlds/edited")).body.world);
+    });
+
     await t.test("steps and runs play in the background, one at a time, and pause before anything uncommitted lands", async () => {
       await create("played");
       provider = new ScriptedProvider([say("Hm.")]);
@@ -336,6 +383,40 @@ test("web director integration", {
       assert.equal((await call("POST", "/api/worlds/branch/introduce", { text: "Only in the branch." })).status, 201);
       assert.equal((await call("GET", "/api/worlds/trunk")).body.world.revision, events.length);
       assert.equal((await call("GET", "/api/worlds/branch")).body.world.revision, end + 1);
+    });
+
+    await t.test("downloads a world or draft as a file, and imports one as a draft or a world", async () => {
+      await create("exported");
+      const download = async (route: string) => {
+        const response = await fetch(`${base}${route}`);
+        return { status: response.status, disposition: response.headers.get("content-disposition"), text: await response.text() };
+      };
+      const save = await download("/api/worlds/exported/export?kind=save");
+      assert.deepEqual([save.status, save.disposition], [200, "attachment; filename=\"exported.save.json\""]);
+      const design = await download("/api/worlds/exported/export");
+      assert.deepEqual([design.status, design.disposition], [200, "attachment; filename=\"the-dry-aqueduct.design.json\""]);
+      assert.match(design.text, /^\{\n {2}"format": "dungeons-world"/, "a design is indented for reading");
+      assert.equal((await download("/api/worlds/exported/export?kind=everything")).status, 400);
+      assert.equal((await download("/api/worlds/nowhere/export?kind=save")).status, 404);
+
+      const world = await call("POST", "/api/import", JSON.parse(save.text));
+      assert.equal(world.status, 201, JSON.stringify(world.body));
+      assert.deepEqual([world.body.kind, world.body.world.world.id, world.body.world.setupSaved], ["save", "exported-2", true]);
+      const chosen = await call("POST", "/api/import?worldId=chosen", JSON.parse(save.text));
+      assert.equal(chosen.body.world.world.id, "chosen");
+      const drafted = await call("POST", "/api/import", JSON.parse(design.text));
+      assert.deepEqual([drafted.status, drafted.body.kind, drafted.body.draft.draft.seed.name], [201, "design", "The Dry Aqueduct"]);
+      const again = await download(`/api/drafts/${drafted.body.draft.id}/export`);
+      assert.equal(again.disposition, "attachment; filename=\"the-dry-aqueduct.design.json\"");
+      assert.deepEqual(JSON.parse(again.text).draft, JSON.parse(design.text).draft);
+
+      const junk = await call("POST", "/api/import", { hello: "world" });
+      assert.deepEqual([junk.status, junk.body.error], [400, "This isn't a Dungeons world file."]);
+      // An import may be larger than other requests, up to 16 MiB.
+      const json = { Host: `localhost:${port}`, "Content-Type": "application/json" };
+      assert.equal((await raw("POST", "/api/import", json, JSON.stringify({ format: "dungeons-world", padding: "x".repeat(600_000) }))).status, 400);
+      assert.equal((await raw("POST", "/api/worlds/exported/steer", json, JSON.stringify({ text: "x".repeat(600_000) }))).status, 413);
+      assert.equal((await raw("POST", "/api/import", json, JSON.stringify({ padding: "x".repeat(17 * 1024 * 1024) }))).status, 413);
     });
 
     await t.test("serves the web UI, with client-side routes falling back to it", async () => {

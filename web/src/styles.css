@@ -410,6 +410,14 @@ dialog.dialog[open] { display: flex; flex-direction: column; animation: enter .1
 .step-track li { display: inline-flex; align-items: center; gap: 3px; padding: 2px 9px; border: 1px solid var(--line); border-radius: 12px; color: var(--muted); font-size: 12px; }
 .step-track li.done { border-color: var(--green-line); background: var(--green-soft); color: var(--green-dark); }
 .step-track li.next { border-color: var(--green); color: var(--green-dark); font-weight: 500; }
+.proposal-card ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.proposal-card label { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; font-weight: 400; }
+.proposal-card input[type="checkbox"] { margin: 3px 0 0; flex-shrink: 0; }
+.proposal-card .detail { display: block; color: var(--muted); overflow-wrap: anywhere; }
+.proposal-card input[type="text"] { min-height: 34px; padding: 6px 10px; font-size: 13px; }
+.proposal-list { margin: 0; padding-left: 22px; font-size: 13px; color: var(--muted); }
+.proposal-list strong { color: var(--ink); font-weight: 500; }
+.kind { display: inline-block; padding: 0 7px; border-radius: 9px; background: var(--green-soft); color: var(--green-dark); font-size: 11px; font-weight: 500; }
 .step-toggle { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
 .step-toggle input { margin: 0; }
 .assistant-input { display: grid; gap: 6px; padding: 10px 12px; border-top: 1px solid var(--line); background: var(--paper); }
@@ -437,6 +445,9 @@ body.panel-open .app { padding-right: min(420px, 100%); }
   padding: 14px 28px; border-bottom: 1px solid var(--line); background: var(--paper);
 }
 .world-header h1 { font-size: 22px; }
+.header-actions { display: flex; align-items: flex-start; gap: 14px; }
+.editor-button { gap: 6px; border-color: var(--green-line); color: var(--green-dark); }
+.editor-button:hover:not(:disabled), .editor-button.active { background: var(--green-soft); }
 .controls { display: flex; flex-direction: column; gap: 6px; align-items: flex-end; }
 .controls .row { justify-content: flex-end; }
 .controls input[type="number"] { width: 76px; }
@@ -467,6 +478,12 @@ body.panel-open .app { padding-right: min(420px, 100%); }
 .event.director { background: var(--violet-soft); }
 .event.aside { background: transparent; border: 1px dashed var(--line-strong); color: var(--muted); }
 .event.retracted .words, .event.retracted > div:not(.meta):not(.event-actions) { text-decoration: line-through; opacity: .6; }
+.event .original { color: var(--muted); font-style: normal; text-decoration: line-through; margin-top: 2px; }
+/* Edit, delete, and branch show on hover or focus, so the story reads clean. */
+.line-actions { margin-left: auto; display: flex; gap: 2px; opacity: 0; transition: opacity .12s; }
+.event:hover .line-actions, .event:focus-within .line-actions { opacity: 1; }
+.line-actions .icon-button { width: 26px; height: 26px; }
+.line-actions .icon-button.active { opacity: 1; background: var(--green-soft); color: var(--green); }
 .meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 11px; color: var(--muted); font-style: normal; }
 .meta .tag { line-height: 1.5; }
 .seq { font-variant-numeric: tabular-nums; }
@@ -589,6 +606,9 @@ table.grid th, table.grid td { text-align: left; padding: 5px 6px; border-bottom
   }
   .run-pill:hover:not(:disabled) { background: var(--green-dark); }
   .run-pill.running { background: var(--amber); }
+  .header-actions { align-items: center; gap: 8px; flex-shrink: 0; }
+  .editor-button { width: 44px; height: 44px; min-height: 0; padding: 0; border-radius: 50%; }
+  .editor-button .label { display: none; }
   .director-hint { display: none; }
   .controls { align-items: stretch; }
   .controls .row { justify-content: flex-start; }

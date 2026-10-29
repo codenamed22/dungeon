@@ -196,6 +196,22 @@ export const migrations: readonly Migration[] = [
       `);
     },
   },
+  {
+    version: 8,
+    name: "world_editor_chats",
+    async up(client, ns) {
+      await client.query(`
+        -- The story editor's chat log for each world. Director state like
+        -- setups, never part of the fiction, and not branched or exported;
+        -- the application validates its shape.
+        CREATE TABLE ${ns}.world_editor_chats (
+          world_id text PRIMARY KEY REFERENCES ${ns}.adventure_worlds(id),
+          chat jsonb NOT NULL DEFAULT '[]'::jsonb,
+          updated_at timestamptz NOT NULL DEFAULT now()
+        );
+      `);
+    },
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = migrations.at(-1)!.version;

@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
-import { ArrowUp, Check, ChevronDown, CircleAlert, Sparkles, Square, Undo2, Wrench, X } from "lucide-react";
+import { ArrowUp, Check, ChevronDown, CircleAlert, Sparkles, Square, Undo2, X } from "lucide-react";
 import { api, ApiError, errorText } from "../api.ts";
 import type { AssistantEvent } from "../api.ts";
-import type { BuildStepId, ChatEntry, CreatorUsage, Draft, ModelInfo, ToolLine } from "../types.ts";
+import type { BuildStepId, ChatEntry, CreatorUsage, Draft, ToolLine } from "../types.ts";
 import { BUILD_STEPS, buildStep, nextBuildStep } from "../../../src/creator/steps.ts";
 import { NARROW, useDrag, useMedia, useOverlay, useStored } from "../ui/hooks.ts";
+import { ModelPicker, money, ToolRow, totalCost, usageText } from "../assistant/parts.tsx";
 import type { DraftEditor } from "./useDraft.ts";
 
 const SUGGESTIONS = [
@@ -34,13 +35,6 @@ interface LiveRun {
 const isEmpty = (draft: Draft) => draft.seed.locations.length === 0 && draft.seed.characters.length === 0 && !draft.cast.premise;
 
 const stepNumber = (id: BuildStepId) => BUILD_STEPS.findIndex((step) => step.id === id) + 1;
-
-const money = (cost: number) => (cost < 0.01 ? `$${cost.toFixed(4)}` : `$${cost.toFixed(2)}`);
-
-function usageText(usage: CreatorUsage): string {
-  const tokens = `${(usage.inputTokens + usage.outputTokens).toLocaleString()} tokens`;
-  return usage.cost === null ? tokens : `${money(usage.cost)} · ${tokens}`;
-}
 
 /**
  * The AI creator: a tab on the right edge that pulls out a chat panel. It
@@ -132,11 +126,7 @@ export function AssistantPanel({ editor, draftId, launch }: { editor: DraftEdito
     },
   });
 
-  const spent = useMemo(() => {
-    const all = [...chat.map((entry) => entry.usage), ...(live?.usage ? [live.usage] : [])];
-    if (all.length === 0) return null;
-    return all.some((usage) => usage.cost === null) ? null : all.reduce((sum, usage) => sum + (usage.cost ?? 0), 0);
-  }, [chat, live?.usage]);
+  const spent = useMemo(() => totalCost([...chat.map((entry) => entry.usage), ...(live?.usage ? [live.usage] : [])]), [chat, live?.usage]);
 
   /** After a stop or a dropped connection, waits for the server to finish saving, then shows what it kept. */
   async function settle(run: LiveRun) {
@@ -335,7 +325,7 @@ export function AssistantPanel({ editor, draftId, launch }: { editor: DraftEdito
             {problem && <p className="assistant-error" role="alert"><CircleAlert size={14} /> {problem}</p>}
           </div>
         )}
-        {picking && <ModelPicker current={chosenModel} fallback={server?.model ?? null} onPick={(id) => { setChosenModel(id); setPicking(false); }} onClose={() => setPicking(false)} />}
+        {picking && <ModelPicker title="Model for the AI creator" current={chosenModel} fallback={server?.model ?? null} onPick={(id) => { setChosenModel(id); setPicking(false); }} onClose={() => setPicking(false)} />}
         <form className="assistant-input" onSubmit={(event) => { event.preventDefault(); void send(text); }}>
           {noKey && <p className="assistant-error">Set OPENROUTER_API_KEY in .env.local and restart the server to use the AI creator.</p>}
           <div className="composer">
@@ -402,15 +392,6 @@ function StepCard({ current, disabled, unfinished, onRetry, onContinue, onFinish
   );
 }
 
-function ToolRow({ line }: { line: ToolLine }) {
-  return (
-    <p className={`tool-line ${line.ok ? "" : "failed"}`}>
-      {line.ok ? <Wrench size={12} /> : <X size={12} />}
-      <span>{line.summary}</span>
-    </p>
-  );
-}
-
 function Turn({ entry, undo, undone, undoing }: { entry: ChatEntry; undo: (() => void) | null; undone: boolean; undoing: boolean }) {
   const [showSteps, setShowSteps] = useState(false);
   const changes = entry.tools.filter((line) => line.ok && !READS.has(line.name));
@@ -441,48 +422,5 @@ function Turn({ entry, undo, undone, undoing }: { entry: ChatEntry; undo: (() =>
         </div>
       )}
     </>
-  );
-}
-
-function ModelPicker({ current, fallback, onPick, onClose }: { current: string; fallback: string | null; onPick(id: string): void; onClose(): void }) {
-  const [query, setQuery] = useState("");
-  const [models, setModels] = useState<ModelInfo[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      api.models(query)
-        .then((found) => { setModels(found.filter((model) => model.tools)); setError(null); })
-        .catch((problem) => setError(errorText(problem)));
-    }, 250);
-    return () => clearTimeout(timer);
-  }, [query]);
-  return (
-    <div className="model-picker">
-      <div className="row">
-        <strong className="grow small">Model for the AI creator</strong>
-        <button type="button" className="icon-button" aria-label="Close the model list" onClick={onClose}><X size={16} /></button>
-      </div>
-      <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search models that can call tools" aria-label="Search models" autoFocus />
-      {error && <p className="error small">{error}</p>}
-      <ul className="model-results">
-        <li>
-          <button type="button" className="link small" onClick={() => onPick("")}>
-            {current === "" && <Check size={12} />} The server's default{fallback ? ` (${fallback})` : ""}
-          </button>
-        </li>
-        {models === null && <li className="muted small">Loading…</li>}
-        {models?.length === 0 && <li className="muted small">No model that can call tools matches.</li>}
-        {models?.map((model) => (
-          <li key={model.id}>
-            <button type="button" className="link small" onClick={() => onPick(model.id)}>
-              {current === model.id && <Check size={12} />} {model.id}
-            </button>
-            {model.promptPerMillion !== null && model.completionPerMillion !== null && (
-              <span className="muted small"> · ${model.promptPerMillion.toFixed(2)} / ${model.completionPerMillion.toFixed(2)} per M tokens</span>
-            )}
-          </li>
-        ))}
-      </ul>
-    </div>
   );
 }

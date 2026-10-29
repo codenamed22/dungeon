@@ -6,6 +6,9 @@ import {
   EngineError,
   EVENT_FORMAT,
   MAX_GOALS,
+  MAX_INTRODUCED_LENGTH,
+  MAX_NARRATION_LENGTH,
+  MAX_SPEECH_LENGTH,
   rulesOf,
   validateWorld,
   worldStateSchema,
@@ -94,19 +97,34 @@ export function quantity(inventory: Record<string, number>, itemId: string): num
   return Object.hasOwn(inventory, itemId) ? inventory[itemId] ?? 0 : 0;
 }
 
-/** Events a retcon may withdraw: words only, never a change to the world. */
-const RETRACTABLE = new Set<EventData["type"]>(["narration", "utterance", "introduced"]);
+/** Lines a retcon may change, with the most words each may have: words only, never a change to the world. */
+const LINE_LIMITS: Partial<Record<EventData["type"], number>> = {
+  narration: MAX_NARRATION_LENGTH,
+  utterance: MAX_SPEECH_LENGTH,
+  introduced: MAX_INTRODUCED_LENGTH,
+};
 
-/** Why an event cannot be retconned, or null if it can. Introduced events that changed routes are undone by branching instead. */
-export function retractionProblem(target: AdventureEvent | undefined, alreadyRetracted: boolean): string | null {
+/**
+ * Why a retcon cannot change the target, or null if it can. A line may be
+ * reworded again and again, until it is withdrawn. An introduced event that
+ * changed routes may be reworded, but not withdrawn: branching undoes it.
+ */
+export function retractionProblem(target: AdventureEvent | undefined, replacement: string | undefined, withdrawn: boolean): string | null {
   if (!target) return "No such event";
   const data = target.data;
-  if (!RETRACTABLE.has(data.type)) return "Only narration, speech, and introduced events can be retconned; branch the world to undo anything else";
-  if (data.type === "introduced" && data.lockedRoutes.length + data.unlockedRoutes.length > 0) {
+  const limit = LINE_LIMITS[data.type];
+  if (limit === undefined) return "Only narration, speech, and introduced events can be retconned; branch the world to undo anything else";
+  if (withdrawn) return "That line was already withdrawn";
+  if (replacement === undefined && data.type === "introduced" && data.lockedRoutes.length + data.unlockedRoutes.length > 0) {
     return "This introduced event changed the world; branch the world to undo it";
   }
-  if (alreadyRetracted) return "That event was already retconned";
+  if (replacement !== undefined && replacement.length > limit) return `The new words are longer than this line may be (${limit} characters)`;
   return null;
+}
+
+/** Who perceives a retcon: whoever perceived its target when it carries a correction, and nobody otherwise. */
+export function retconAudience(data: { text?: string | undefined }, targetPerceivers: readonly string[]): readonly string[] {
+  return data.text === undefined ? [] : targetPerceivers;
 }
 
 /** Actions that the DM may narrate; speech and narration are not narratable. */
@@ -536,8 +554,8 @@ export function eventDuration(data: EventData): number {
 /**
  * Characters who perceive an event: conscious characters where it happens, plus
  * the actor. A move is seen at both ends. Narration reaches the perceivers of the
- * events it describes, and a retraction the perceivers of its target; the caller
- * supplies that audience.
+ * events it describes, and a retraction its audience (see retconAudience); the
+ * caller supplies these.
  */
 export function perceiversOf(
   before: WorldState | undefined,
@@ -664,8 +682,13 @@ export function resolveCommand(
       }
       append("director", { type: "steering", text: action.text, ...(target === undefined ? {} : { targetId: target }) });
     } else if (action.type === "retcon") {
-      // The caller checks the target with retractionProblem and supplies its perceivers.
-      append("director", { type: "retraction", targetSequence: action.sequence, text: action.text });
+      // The caller checks the target with retractionProblem and supplies the audience.
+      append("director", {
+        type: "retraction",
+        targetSequence: action.sequence,
+        ...(action.text === undefined ? {} : { text: action.text }),
+        ...(action.replacement === undefined ? {} : { replacement: action.replacement }),
+      });
     } else if (action.type === "enter") {
       const arriving = current.characters.find((character) => character.id === action.characterId);
       if (!arriving) invalid(`Unknown character: ${action.characterId}`);
@@ -1100,7 +1123,8 @@ export class Replayer {
   state: WorldState | undefined;
   private readonly history = new Map<number, { event: AdventureEvent; perceivers: string[] }>();
   private lastCheck: AdventureEvent | undefined;
-  private readonly retracted = new Set<number>();
+  /** Lines a retcon withdrew, which nothing may change again. */
+  private readonly withdrawn = new Set<number>();
 
   apply(event: AdventureEvent): string[] {
     const data = event.data;
@@ -1115,9 +1139,9 @@ export class Replayer {
     }
     if (data.type === "retraction") {
       const target = this.history.get(data.targetSequence);
-      const problem = retractionProblem(target?.event, this.retracted.has(data.targetSequence));
+      const problem = retractionProblem(target?.event, data.replacement, this.withdrawn.has(data.targetSequence));
       if (problem) corrupt(`Invalid retcon: ${problem}`);
-      audience = target!.perceivers;
+      audience = [...retconAudience(data, target!.perceivers)];
     }
     if (data.type === "discovery") {
       const check = this.history.get(event.sequence - 1)?.event;
@@ -1162,7 +1186,7 @@ export class Replayer {
     const perceivers = perceiversOf(this.state, data, audience);
     this.state = applyEvent(this.state, event);
     this.history.set(event.sequence, { event, perceivers });
-    if (data.type === "retraction") this.retracted.add(data.targetSequence);
+    if (data.type === "retraction" && data.replacement === undefined) this.withdrawn.add(data.targetSequence);
     return perceivers;
   }
 

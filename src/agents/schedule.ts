@@ -15,9 +15,12 @@ export interface TurnRecord {
   endedAt: number;
 }
 
-/** Groups the character and NPC turns in a slice of the log, oldest first. */
+/** Groups the character and NPC turns in a slice of the log, oldest first. A line the director deleted addresses nobody. */
 export function turnHistory(events: AdventureEvent[], state: WorldState): TurnRecord[] {
   const turns: TurnRecord[] = [];
+  const deleted = new Set(events.flatMap((event) => (
+    event.data.type === "retraction" && event.data.replacement === undefined ? [event.data.targetSequence] : []
+  )));
   for (const event of events) {
     const data = event.data;
     if (data.type === "world_created" || data.type === "narration" || data.type === "steering") continue;
@@ -30,7 +33,7 @@ export function turnHistory(events: AdventureEvent[], state: WorldState): TurnRe
       turns.push(turn);
     }
     turn.endedAt = event.elapsedSeconds;
-    if (data.type === "utterance") turn.addresseeId = data.addresseeId ?? null;
+    if (data.type === "utterance") turn.addresseeId = deleted.has(event.sequence) ? null : data.addresseeId ?? null;
     else if (actorId === turn.actorId && !isMental(data.type)) turn.acted = true;
   }
   return turns;

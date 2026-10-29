@@ -1,5 +1,8 @@
+import { useState } from "react";
+import { Download } from "lucide-react";
 import { bandOf } from "../../../src/creator/operations.ts";
 import { rulesOf } from "../../../src/model.ts";
+import { api, errorText } from "../api.ts";
 import { clock, nameOf } from "../format.ts";
 import type { WorldView } from "../types.ts";
 
@@ -119,6 +122,38 @@ export function WorldPanel({ view }: { view: WorldView }) {
           );
         })}
       </ul>
+      <DownloadWorld worldId={state.id} />
     </div>
+  );
+}
+
+/** Saves the world to a file: its design, or its whole history. */
+function DownloadWorld({ worldId }: { worldId: string }) {
+  const [busy, setBusy] = useState<"design" | "save" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  async function save(kind: "design" | "save") {
+    setBusy(kind);
+    setError(null);
+    try {
+      await api.exportWorld(worldId, kind);
+    } catch (problem) {
+      setError(errorText(problem));
+    } finally {
+      setBusy(null);
+    }
+  }
+  return (
+    <>
+      <h3>Download</h3>
+      <div className="row wrap">
+        <button type="button" className="small" disabled={busy !== null} onClick={() => void save("design")}><Download size={14} />Design</button>
+        <button type="button" className="small" disabled={busy !== null} onClick={() => void save("save")}><Download size={14} />Full save</button>
+      </div>
+      <p className="small muted">
+        The design is the world as written, with its cast and models, to edit or share; it has no play history. A full save holds
+        every event, the characters' private memories included, to play on elsewhere. Import either from Your worlds.
+      </p>
+      {error && <p className="error small">{error}</p>}
+    </>
   );
 }

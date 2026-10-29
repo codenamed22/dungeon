@@ -372,6 +372,82 @@
       that a later step will fix out of the reply.
 
   Verified: typecheck, both builds, and all 219 tests pass.
+- **Export and import: complete locally.** The user asked for a way to export
+  and import worlds, and chose two kinds of file, picked when exporting, in both
+  the web director and the CLI.
+  - **A design** is the world as written: the starting seed from its first
+    event, with the current cast and models. It imports as a new draft.
+  - **A full save** is every event, the setup, and mutes. It imports as a new
+    world under the file's world ID, or the next free one.
+  - **One shared module,** `src/exchange.ts`, holds the file format and both
+    directions. A file is `{format: "dungeons-world", version: 1, kind, …}`.
+  - **An import is checked before anything is stored.** It replays every
+    event the way branching does (branching and importing now share
+    `insertHistory`). A dropped event, an edited roll, a forged narration, a
+    malformed event, or a setup that doesn't fit the world is refused, with
+    its reason.
+  - **Drafts can carry model choices** (`draft.models`). Publishing uses them,
+    and Review shows them. The models schema moved to the Node-free
+    `src/agents/models.ts`.
+  - **What a save leaves out:** retry receipts, model-call traces, and the AI
+    creator's chat.
+  - **Size:** an import may be up to 16 MiB; other requests keep the 512 KiB
+    limit.
+  - **Where:**
+    - The World tab offers Design and Full save.
+    - A draft's Review step offers Download design.
+    - Your worlds offers Import.
+    - The CLI adds `export [--full] [--draft ID] [--out FILE]` and
+      `import FILE [--world ID]`.
+
+  Verified 2026-10-29 on local PostgreSQL 16:
+  - the CLI exported a world both ways on a scratch schema, imported both
+    files, and refused a taken ID;
+  - headless Chrome downloaded both kinds, imported them from Your worlds,
+    showed the imported models on Review, and showed a bad file's error, at
+    1440 px and 390 px, with no sideways scrolling and no console errors
+    besides that upload's deliberate 400.
+
+  Verified: typecheck, both builds, and all 222 tests pass.
+- **Editing and deleting lines, and the story editor: complete locally.** The
+  user asked for a button during play that reads the story, judges it, and
+  changes things to make it better, and for the director to edit or delete
+  lines. They chose review first and fix on approval, agents and story only
+  (no structural changes in a playing world), and only when pressed.
+  - **Edits and deletions** extend the retcon: a `retraction` event with a
+    `replacement` rewords a line (agents see the new words in its place), one
+    with neither field deletes it quietly, and one with `text` is the old
+    retcon with a correction. Edits and quiet deletions reach nobody. Old
+    events stay valid, so nothing is upcast. Memory search matches the newest
+    words, and the scheduler ignores a deleted line when working out who was
+    spoken to.
+  - **The feed** has edit and delete icons on narration, speech, and
+    introduced lines (in the "…" sheet on phones), an "edited" tag with the
+    original on request, and an optional "Tell them what really happened" note
+    on a delete.
+  - **The story editor** (`src/editor/`) runs on a tool loop shared with the AI
+    creator (`src/agents/assistant-loop.ts`). A review pass reads the story,
+    the world, the setup, the report, and characters' memories and prompts, and
+    calls `propose_changes`; a fix pass makes the approved changes through the
+    creator's persona and style operations and the director's commands. The
+    newest 150 lines (about 40k characters) go in each message.
+  - **Exclusion:** the editor holds the world's scheduler lease while it works,
+    so no run from the web or the CLI plays under it, and it is refused while
+    a run holds the lease. Its chat is stored per world (migration 8), capped
+    at 100 messages, and isn't exported or branched.
+  - **The panel** opens from an Editor button in the world header: a review
+    button and suggestions, the proposal as a checklist with a note, Undo for
+    agent changes while the setup is unchanged since, the story lines it
+    committed, Stop, and a Pause prompt while the world runs.
+
+  Verified 2026-10-29 on local PostgreSQL 16, with a scripted OpenRouter (no
+  credits spent): headless Chrome edited a line, deleted one quietly and one
+  with a note, checked a character's view, ran a review, unticked a proposed
+  change, ran the fix, undid its persona change, stopped a message, and paused
+  a run from the panel, at 1440 px and 390 px, with no sideways scrolling and
+  no console errors.
+
+  Verified: typecheck, both builds, and all 230 tests pass.
 - Development and tests use local PostgreSQL or a Neon development branch, not the
   `production` branch.
 

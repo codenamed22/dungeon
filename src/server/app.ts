@@ -17,11 +17,14 @@ import { BUILD_STEP_IDS } from "../creator/steps.ts";
 import { loadSetup, parseSetup, placeholderCast, resolvedModels } from "../agents/setup.ts";
 import type { Setup } from "../agents/setup.ts";
 import type { AdventureEngine } from "../engine.ts";
+import { exportDesign, exportSave, importWorldFile, worldFileName } from "../exchange.ts";
+import type { WorldFile } from "../exchange.ts";
 import { EngineError } from "../model.ts";
 import type { AdventureEvent, WorldState } from "../model.ts";
 import { allowedEmail, AUTH_BASE_PATH, createAuth } from "./auth.ts";
 import type { AuthSettings, DirectorAuth } from "./auth.ts";
 import { DraftService } from "./drafts.ts";
+import { EditorService } from "./editor.ts";
 import { isRehearsable, requireRehearsable } from "./runs.ts";
 import type { RunManager, RunStatus } from "./runs.ts";
 
@@ -115,6 +118,8 @@ const STATUS_BY_CODE: Record<EngineError["code"], number> = {
 };
 
 const MAX_BODY_BYTES = 512 * 1024;
+/** A world's whole history can be large; only an import may send this much. */
+const MAX_IMPORT_BYTES = 16 * 1024 * 1024;
 const MAX_FORM_BYTES = 64 * 1024;
 const MODEL_CACHE_MS = 10 * 60_000;
 
@@ -146,7 +151,8 @@ const bodies = {
     lockRoutes: z.array(routeRef).optional(),
     unlockRoutes: z.array(routeRef).optional(),
   }),
-  retcon: z.object({ sequence: z.number(), text: z.string() }),
+  /** `replacement` rewords the line; otherwise it is withdrawn, with `text` as a correction if given. */
+  retcon: z.object({ sequence: z.number(), text: z.string().optional(), replacement: z.string().optional() }),
   enter: z.object({ characterId: z.string(), locationId: z.string(), text: z.string().optional() }),
   exit: z.object({ characterId: z.string(), text: z.string().optional() }),
   step: z.object({ actorId: z.string().optional() }),
@@ -158,6 +164,11 @@ const bodies = {
     model: z.string().max(200).optional(),
     step: z.enum(BUILD_STEP_IDS).optional(),
     expectedRevision: z.number().int().positive(),
+  }),
+  editor: z.object({
+    message: z.string().trim().min(1).max(16_000),
+    pass: z.enum(["review", "fix"]),
+    model: z.string().max(200).optional(),
   }),
   run: z.object({
     turns: z.number(),
@@ -184,8 +195,8 @@ async function readBody(request: IncomingMessage, maxBytes: number): Promise<Buf
   return Buffer.concat(chunks);
 }
 
-async function readJson(request: IncomingMessage): Promise<unknown> {
-  const body = await readBody(request, MAX_BODY_BYTES);
+async function readJson(request: IncomingMessage, maxBytes = MAX_BODY_BYTES): Promise<unknown> {
+  const body = await readBody(request, maxBytes);
   if (body.length === 0) return {};
   try {
     return JSON.parse(body.toString("utf8"));
@@ -211,6 +222,18 @@ async function answerAuth(request: IncomingMessage, response: ServerResponse, au
   if (cookies.length > 0) out["set-cookie"] = cookies;
   response.writeHead(reply.status, out);
   response.end(Buffer.from(await reply.arrayBuffer()));
+}
+
+/** A world file, as a download. A design is indented, since people read and change it; a save can be large. */
+function sendWorldFile(response: ServerResponse, file: WorldFile): void {
+  const text = JSON.stringify(file, null, file.kind === "design" ? 2 : undefined);
+  response.writeHead(200, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Content-Length": Buffer.byteLength(text),
+    "Content-Disposition": `attachment; filename="${worldFileName(file)}"`,
+    "Cache-Control": "no-store",
+  });
+  response.end(text);
 }
 
 function sendJson(response: ServerResponse, status: number, body: unknown): void {
@@ -243,6 +266,7 @@ export function createApp(options: AppOptions): (request: IncomingMessage, respo
   const allowed = new Set(options.allowedHosts);
   const fetchModels = options.fetchModels ?? (() => fetchOpenRouterModels());
   const drafts = new DraftService(engine);
+  const editor = new EditorService(engine);
   const auth = options.auth ? createAuth(options.auth, env) : null;
   let modelCache: { at: number; models: OpenRouterModel[] } | null = null;
 
@@ -429,6 +453,55 @@ export function createApp(options: AppOptions): (request: IncomingMessage, respo
     }
   }
 
+  /**
+   * The story editor at work on a world, streamed like the AI creator: one
+   * JSON event per line. The last, "done", carries the world as it is now.
+   */
+  async function editorStream(request: IncomingMessage, response: ServerResponse, worldId: string): Promise<void> {
+    const body = parseBody(bodies.editor, await readJson(request));
+    requirePlayable();
+    if (runs.status(worldId)?.state === "running" || runs.status(worldId)?.state === "pausing") {
+      throw new EngineError("WORLD_BUSY", "This world is running; pause it, then ask the story editor");
+    }
+    const settings = creatorSettingsFromEnv(env, body.model);
+    const chat = OpenRouterChat.create(options.creatorFetch ? { ...settings, fetch: options.creatorFetch } : settings, await catalog());
+    const controller = new AbortController();
+    let heartbeat: NodeJS.Timeout | undefined;
+    const send = (event: unknown) => {
+      if (!response.writableEnded && !response.destroyed) response.write(`${JSON.stringify(event)}\n`);
+    };
+    try {
+      const { entry, view } = await editor.assist(worldId, {
+        message: body.message,
+        pass: body.pass,
+        chat,
+        signal: controller.signal,
+        onStart: () => {
+          response.writeHead(200, { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store", "X-Accel-Buffering": "no" });
+          response.on("close", () => {
+            if (!response.writableEnded) controller.abort();
+          });
+          heartbeat = setInterval(() => send({ type: "heartbeat" }), 15_000);
+          send({ type: "start", model: chat.model });
+        },
+        onEvent: send,
+      });
+      send({ type: "done", entry, editor: view, world: await worldView(worldId) });
+    } catch (error) {
+      if (!response.headersSent) throw error;
+      if (!(error instanceof EngineError)) console.error(error);
+      send({ type: "error", message: error instanceof EngineError ? error.message : "The story editor failed; see the server log" });
+    } finally {
+      clearInterval(heartbeat);
+      if (response.headersSent) response.end();
+    }
+  }
+
+  /** Runs and the story editor never overlap: a run waits for the editor to finish. */
+  function requireNoEditor(worldId: string): void {
+    if (editor.isBusy(worldId)) throw new EngineError("WORLD_BUSY", "The story editor is working on this world; wait for it or stop it");
+  }
+
   async function serveStatic(response: ServerResponse, pathname: string): Promise<void> {
     if (options.staticDir === null) throw new HttpError(404, "Not found");
     const root = path.resolve(options.staticDir);
@@ -544,6 +617,17 @@ export function createApp(options: AppOptions): (request: IncomingMessage, respo
         const events = await engine.getEvents(worldId!, Math.max(0, state.revision - 1000), 1000);
         return json(computeMetrics(events, await engine.getTraces(worldId!, 1000), state));
       }
+      case "GET worlds/:world/export": {
+        const kind = url.searchParams.get("kind") ?? "design";
+        if (kind !== "design" && kind !== "save") throw new HttpError(400, "kind must be design or save");
+        return sendWorldFile(response, kind === "save" ? await exportSave(engine, worldId!) : await exportDesign(engine, { worldId: worldId! }));
+      }
+      case "POST import": {
+        const result = await importWorldFile(engine, await readJson(request, MAX_IMPORT_BYTES), { worldId: url.searchParams.get("worldId") || undefined });
+        return json(result.kind === "design"
+          ? { kind: "design", draft: await drafts.view(result.draft) }
+          : { kind: "save", world: await worldView(result.world.id) }, 201);
+      }
       case "PUT worlds/:world/setup": {
         const state = await engine.getWorld(worldId!);
         await engine.saveSetup(worldId!, parseSetup(await readJson(request), state));
@@ -591,7 +675,12 @@ export function createApp(options: AppOptions): (request: IncomingMessage, respo
       }
       case "POST worlds/:world/retcon": {
         const body = parseBody(bodies.retcon, await readJson(request));
-        const result = await direct(engine, worldId!, { type: "retcon", sequence: body.sequence, text: body.text });
+        const result = await direct(engine, worldId!, {
+          type: "retcon",
+          sequence: body.sequence,
+          ...(body.text?.trim() ? { text: body.text } : {}),
+          ...(body.replacement === undefined ? {} : { replacement: body.replacement }),
+        });
         return json({ sequence: result.events[0]!.sequence }, 201);
       }
       case "POST worlds/:world/branch": {
@@ -603,18 +692,25 @@ export function createApp(options: AppOptions): (request: IncomingMessage, respo
         const body = parseBody(bodies.step, await readJson(request));
         requirePlayable();
         await engine.getWorld(worldId!);
+        requireNoEditor(worldId!);
         return json(runs.start(worldId!, { kind: "step", actorId: body.actorId }), 202);
       }
       case "POST worlds/:world/run": {
         const body = parseBody(bodies.run, await readJson(request));
         requirePlayable();
         await engine.getWorld(worldId!);
+        requireNoEditor(worldId!);
         return json(runs.start(worldId!, { kind: "run", ...body }), 202);
       }
       case "POST worlds/:world/rehearse":
         await engine.getWorld(worldId!);
         await requireRehearsable(engine, worldId!);
+        requireNoEditor(worldId!);
         return json(runs.start(worldId!, { kind: "rehearse" }), 202);
+      case "GET worlds/:world/editor":
+        return json(await editor.view(worldId!));
+      case "POST worlds/:world/editor":
+        return editorStream(request, response, worldId!);
       case "POST worlds/:world/pause":
         return json(runs.pause(worldId!));
       case "GET creator":
@@ -626,6 +722,8 @@ export function createApp(options: AppOptions): (request: IncomingMessage, respo
         return json(await drafts.create(parseBody(bodies.createDraft, await readJson(request))), 201);
       case "GET drafts/:world":
         return json(await drafts.get(worldId!));
+      case "GET drafts/:world/export":
+        return sendWorldFile(response, await exportDesign(engine, { draftId: worldId! }));
       case "PUT drafts/:world": {
         const body = parseBody(bodies.saveDraft, await readJson(request));
         return json(await drafts.save(worldId!, body.draft, body.expectedRevision));

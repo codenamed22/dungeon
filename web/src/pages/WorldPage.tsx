@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { BookOpen, Bot, Clock, Ellipsis, Map as MapIcon, Play, Users } from "lucide-react";
+import { BookOpen, Bot, Clock, Ellipsis, Map as MapIcon, Play, Users, WandSparkles } from "lucide-react";
 import { Characters } from "../components/Characters.tsx";
 import { Controls } from "../components/Controls.tsx";
 import { DirectorBox } from "../components/DirectorBox.tsx";
+import { EditorPanel } from "../components/EditorPanel.tsx";
 import { Feed } from "../components/Feed.tsx";
 import { Inspector } from "../components/Inspector.tsx";
 import { ReportPanel } from "../components/ReportPanel.tsx";
@@ -13,7 +14,7 @@ import { clock } from "../format.ts";
 import { linkProps } from "../router.ts";
 import { SheetDialog } from "../ui/Dialog.tsx";
 import { Segmented } from "../ui/controls.tsx";
-import { NARROW, useMedia } from "../ui/hooks.ts";
+import { NARROW, useMedia, useOverlay } from "../ui/hooks.ts";
 import { useWorld } from "../useWorld.ts";
 
 type Tab = "characters" | "world" | "setup" | "report" | "traces";
@@ -45,6 +46,7 @@ export function WorldPage({ worldId }: { worldId: string }) {
   const [inspected, setInspected] = useState<string | null>(null);
   const [viewer, setViewer] = useState<string | null>(null);
   const [controls, setControls] = useState(false);
+  const editor = useOverlay("editor");
 
   if (!view) {
     return (
@@ -75,11 +77,17 @@ export function WorldPage({ worldId }: { worldId: string }) {
             <span className={`status ${live.live ? "good" : "busy pulse"}`}>{live.live ? "live" : "reconnecting"}</span>
           </div>
         </div>
-        {narrow ? (
-          <button type="button" className={`run-pill ${running ? "running" : ""}`} onClick={() => setControls(true)}>
-            <Play size={15} fill="currentColor" />{running ? `${run.turns} turn${run.turns === 1 ? "" : "s"}…` : ending ? "Ended" : "Run"}
+        <div className="header-actions">
+          <button type="button" className={`editor-button ${editor.open ? "active" : ""}`} aria-expanded={editor.open} aria-label="Story editor"
+            title="Have the story editor review the story and fix what isn't working" onClick={editor.open ? editor.hide : editor.show}>
+            <WandSparkles size={15} /><span className="label">Editor</span>
           </button>
-        ) : <Controls worldId={worldId} view={view} run={run} />}
+          {narrow ? (
+            <button type="button" className={`run-pill ${running ? "running" : ""}`} onClick={() => setControls(true)}>
+              <Play size={15} fill="currentColor" />{running ? `${run.turns} turn${run.turns === 1 ? "" : "s"}…` : ending ? "Ended" : "Run"}
+            </button>
+          ) : <Controls worldId={worldId} view={view} run={run} />}
+        </div>
       </header>
       {live.error && <p className="error" style={{ padding: "8px 16px" }}>{live.error}</p>}
       <div className="world-body">
@@ -129,6 +137,7 @@ export function WorldPage({ worldId }: { worldId: string }) {
           </div>
         </aside>
       </div>
+      <EditorPanel worldId={worldId} view={view} run={run} overlay={editor} onWorld={live.setView} />
       {narrow && (
         <>
           <nav className="bottom-tabs" aria-label="World sections">

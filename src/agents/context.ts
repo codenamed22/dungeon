@@ -165,9 +165,12 @@ export function describeEvent(event: AdventureEvent, state: WorldState, viewerId
       return `${stamp} ${by}${data.text} ${now}${entered ? ` ${place(data.locationId)}` : ""}.`;
     }
     case "retraction":
-      return viewerId === null
-        ? `${stamp} Retcon of #${data.targetSequence} by the director: ${data.text}`
-        : `${stamp} Correction: something you were told earlier did not happen, and is withdrawn. ${data.text}`;
+      // Only a retcon with a correction reaches a character; edits and plain deletions reach nobody.
+      if (viewerId !== null) return `${stamp} Correction: something you were told earlier did not happen, and is withdrawn. ${data.text ?? ""}`.trimEnd();
+      if (data.replacement !== undefined) return `${stamp} The director reworded #${data.targetSequence}: ${data.replacement}`;
+      return data.text === undefined
+        ? `${stamp} The director deleted #${data.targetSequence}.`
+        : `${stamp} Retcon of #${data.targetSequence} by the director: ${data.text}`;
     case "steering":
       return `${stamp} Director, outside the story, to ${data.targetId === undefined ? "everyone" : nameIn(state.characters, data.targetId)}: ${data.text}`;
     case "narration":

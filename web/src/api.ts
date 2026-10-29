@@ -1,7 +1,8 @@
 import type {
-  AdventureInfo, AgentPrompts, BuildStepId, ChatEntry, CreatorEvent, Draft, DraftSummary, DraftView, EventView, MemoryReport, MetricsReport,
-  ModelInfo, RunStatus, Setup, TraceRecord, WorldSummary, WorldView,
+  AdventureInfo, AgentPrompts, BuildStepId, ChatEntry, CreatorEvent, Draft, DraftSummary, DraftView, EditorEntry, EditorEvent, EditorView, EventView,
+  MemoryReport, MetricsReport, ModelInfo, RunStatus, Setup, TraceRecord, WorldSummary, WorldView,
 } from "./types.ts";
+import { saveFile } from "./ui/files.ts";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -63,8 +64,22 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return data as T;
 }
 
+/** Fetches a file the server offers as a download, and saves it under the name it gives. */
+async function download(path: string): Promise<void> {
+  const response = await fetch(`/api${path}`);
+  if (!response.ok) {
+    const problem = ((await response.json().catch(() => null)) ?? {}) as { error?: string; code?: string };
+    throw refused(response.status, problem.error ?? response.statusText, problem.code);
+  }
+  const name = /filename="([^"]+)"/.exec(response.headers.get("Content-Disposition") ?? "")?.[1] ?? "world.json";
+  saveFile(await response.blob(), name);
+}
+
 const at = (worldId: string) => `/worlds/${encodeURIComponent(worldId)}`;
 const draftAt = (draftId: string) => `/drafts/${encodeURIComponent(draftId)}`;
+
+/** What importing a file made: a draft from a design, or a world from a save. */
+export type Imported = { kind: "design"; draft: DraftView } | { kind: "save"; world: WorldView };
 
 /** What the AI creator's stream sends, line by line. */
 export type AssistantEvent =
@@ -72,6 +87,14 @@ export type AssistantEvent =
   | { type: "start"; model: string }
   | { type: "heartbeat" }
   | { type: "done"; entry: ChatEntry; draft: DraftView }
+  | { type: "error"; message: string };
+
+/** What the story editor's stream sends, line by line. */
+export type EditorStreamEvent =
+  | EditorEvent
+  | { type: "start"; model: string }
+  | { type: "heartbeat" }
+  | { type: "done"; entry: EditorEntry; editor: EditorView; world: WorldView }
   | { type: "error"; message: string };
 
 export interface IntroduceInput {
@@ -123,7 +146,14 @@ export const api = {
   exit: (worldId: string, characterId: string, text?: string) => request<{ sequence: number }>(
     "POST", `${at(worldId)}/exit`, { characterId, ...(text ? { text } : {}) },
   ),
-  retcon: (worldId: string, sequence: number, text: string) => request<{ sequence: number }>("POST", `${at(worldId)}/retcon`, { sequence, text }),
+  /** Rewords a line: agents who heard it see the new words in its place. */
+  editLine: (worldId: string, sequence: number, text: string) => request<{ sequence: number }>(
+    "POST", `${at(worldId)}/retcon`, { sequence, replacement: text },
+  ),
+  /** Withdraws a line from the agents who heard it; a note tells them what really happened. */
+  deleteLine: (worldId: string, sequence: number, note?: string) => request<{ sequence: number }>(
+    "POST", `${at(worldId)}/retcon`, { sequence, ...(note ? { text: note } : {}) },
+  ),
   branch: (worldId: string, through: number, id: string, name?: string) => request<WorldView>(
     "POST", `${at(worldId)}/branch`, { through, id, ...(name ? { name } : {}) },
   ),
@@ -131,6 +161,11 @@ export const api = {
   run: (worldId: string, input: RunInput) => request<RunStatus>("POST", `${at(worldId)}/run`, input),
   rehearse: (worldId: string) => request<RunStatus>("POST", `${at(worldId)}/rehearse`, {}),
   pause: (worldId: string) => request<RunStatus | null>("POST", `${at(worldId)}/pause`, {}),
+  /** Downloads a world: its design, to edit or share, or a full save of its history, to play on elsewhere. */
+  exportWorld: (worldId: string, kind: "design" | "save") => download(`${at(worldId)}/export?kind=${kind}`),
+  exportDraft: (draftId: string) => download(`${draftAt(draftId)}/export`),
+  /** Imports a world file read from disk. */
+  importWorld: (file: unknown) => request<Imported>("POST", "/import", file),
   prompts: (worldId: string) => request<{ narrator: string; referee: string; judge?: string }>("GET", `${at(worldId)}/prompts`),
 
   creator: () => request<{ model: string; keyConfigured: boolean }>("GET", "/creator"),
@@ -148,29 +183,40 @@ export const api = {
    * Refusals before it starts throw an ApiError; later failures arrive as an
    * error event. Aborting the signal stops it, keeping what it has done.
    */
-  async assist(draftId: string, body: { message: string; model?: string; step?: BuildStepId; expectedRevision: number }, onEvent: (event: AssistantEvent) => void, signal: AbortSignal): Promise<void> {
-    const response = await fetch(`/api${draftAt(draftId)}/assistant`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal,
-    });
-    if (!response.ok || !response.body) {
-      const problem = ((await response.json().catch(() => null)) ?? {}) as { error?: string; code?: string };
-      throw refused(response.status, problem.error ?? response.statusText, problem.code);
-    }
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      for (let end = buffer.indexOf("\n"); end >= 0; end = buffer.indexOf("\n")) {
-        const line = buffer.slice(0, end).trim();
-        buffer = buffer.slice(end + 1);
-        if (line) onEvent(JSON.parse(line) as AssistantEvent);
-      }
-    }
+  assist(draftId: string, body: { message: string; model?: string; step?: BuildStepId; expectedRevision: number }, onEvent: (event: AssistantEvent) => void, signal: AbortSignal): Promise<void> {
+    return streamEvents(`${draftAt(draftId)}/assistant`, body, onEvent, signal);
+  },
+
+  editor: (worldId: string) => request<EditorView>("GET", `${at(worldId)}/editor`),
+  /** Sends a message to the story editor, like `assist`: a review, or a fix of the changes the director approved. */
+  edit(worldId: string, body: { message: string; pass: "review" | "fix"; model?: string }, onEvent: (event: EditorStreamEvent) => void, signal: AbortSignal): Promise<void> {
+    return streamEvents(`${at(worldId)}/editor`, body, onEvent, signal);
   },
 };
+
+/** Posts to an assistant and reports the JSON events it streams back, one per line. */
+async function streamEvents<E>(path: string, body: unknown, onEvent: (event: E) => void, signal: AbortSignal): Promise<void> {
+  const response = await fetch(`/api${path}`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal,
+  });
+  if (!response.ok || !response.body) {
+    const problem = ((await response.json().catch(() => null)) ?? {}) as { error?: string; code?: string };
+    throw refused(response.status, problem.error ?? response.statusText, problem.code);
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    for (let end = buffer.indexOf("\n"); end >= 0; end = buffer.indexOf("\n")) {
+      const line = buffer.slice(0, end).trim();
+      buffer = buffer.slice(end + 1);
+      if (line) onEvent(JSON.parse(line) as E);
+    }
+  }
+}
 
 export function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);

@@ -145,8 +145,11 @@ class Budget {
   }
 }
 
-/** The world's scheduler lease, renewed in the background; losing it aborts `signal`. */
-class Lease {
+/**
+ * The world's scheduler lease, renewed in the background; losing it aborts
+ * `signal`. The story editor holds it too, so it and a run never overlap.
+ */
+export class Lease {
   private readonly engine: AdventureEngine;
   private readonly worldId: string;
   private readonly ttlMs: number;

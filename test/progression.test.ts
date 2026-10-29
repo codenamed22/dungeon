@@ -13,7 +13,7 @@ import type { RunnerSettings, StepOutcome } from "../src/agents/runner.ts";
 import { chooseNextActor, dueAgendas, pendingSteering, turnDirection, turnHistory } from "../src/agents/schedule.ts";
 import type { TurnRecord } from "../src/agents/schedule.ts";
 import { AdventureEngine } from "../src/engine.ts";
-import { validateWorld } from "../src/model.ts";
+import { commandSchema, validateWorld } from "../src/model.ts";
 import type { AdventureEvent, Threat, WorldSeed } from "../src/model.ts";
 import { applyEvent, Replayer } from "../src/rules.ts";
 import { sampleWorld } from "../src/sample-world.ts";
@@ -314,6 +314,37 @@ test("replay accepts a retcon only of words, only once, reaching exactly who per
   assert.throws(() => other.apply(retraction(other, 99)), errorCode("CORRUPT_STORAGE"));
   const forgedSource = nextEvent(other.state!, { type: "retraction", targetSequence: said.sequence, text: "No." });
   assert.throws(() => other.apply(forgedSource), errorCode("CORRUPT_STORAGE"));
+});
+
+test("replay lets a line be reworded again and again until it is deleted, and an edit or a plain delete reaches nobody", () => {
+  const session = new Session(starterWorld("edits"));
+  session.commit({ speech: "Bram, the bars are rotten through.", addresseeId: "bram" });
+  session.commit({ actorId: "elowen", action: { type: "wait", seconds: 60 } });
+  const [said, waited] = session.events as [AdventureEvent, AdventureEvent];
+  const replayer = new Replayer();
+  replayer.apply(creationEvent(starterWorld("edits")));
+  for (const event of session.events) replayer.apply(event);
+  const retcon = (data: { targetSequence: number; text?: string; replacement?: string }) => (
+    nextEvent(replayer.state!, { type: "retraction", ...data }, { source: "director" })
+  );
+  assert.deepEqual(replayer.apply(retcon({ targetSequence: said.sequence, replacement: "The bars look solid." })), [], "an edit reaches nobody");
+  assert.deepEqual(replayer.apply(retcon({ targetSequence: said.sequence, replacement: "The bars might give." })), [], "and can be made again");
+  assert.throws(() => replayer.apply(retcon({ targetSequence: said.sequence, replacement: "x".repeat(701) })), errorCode("CORRUPT_STORAGE"),
+    "speech keeps its own limit");
+  assert.throws(() => replayer.apply(retcon({ targetSequence: waited.sequence, replacement: "Elowen waits." })), errorCode("CORRUPT_STORAGE"),
+    "a wait has no words to change");
+  const deletion = retcon({ targetSequence: said.sequence });
+  assert.deepEqual(replayer.apply(deletion), [], "a plain delete reaches nobody");
+  assert.throws(() => replayer.apply(retcon({ targetSequence: said.sequence, replacement: "Again." })), errorCode("CORRUPT_STORAGE"),
+    "nothing changes a deleted line");
+  assert.throws(() => replayer.apply(retcon({ targetSequence: said.sequence, text: "No." })), errorCode("CORRUPT_STORAGE"));
+  // A deleted line addressed nobody, so nobody is due to answer it.
+  assert.equal(turnHistory(session.events, session.state)[0]!.addresseeId, "bram");
+  assert.equal(turnHistory([...session.events, deletion], session.state)[0]!.addresseeId, null);
+  // New words and a correction are two different retcons.
+  const both = { role: "director", requestId: "both", expectedRevision: 3, action: { type: "retcon", sequence: 2, text: "No.", replacement: "Yes." } };
+  assert.equal(commandSchema.safeParse(both).success, false);
+  assert.equal(commandSchema.safeParse({ ...both, action: { type: "retcon", sequence: 2 } }).success, true);
 });
 
 let turnCount = 0;

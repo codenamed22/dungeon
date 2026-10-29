@@ -8,6 +8,8 @@ export type { CreatorEvent, CreatorUsage, ToolLine } from "../../src/creator/ass
 export type { Draft, DraftProblem, DraftSection } from "../../src/creator/operations.ts";
 export type { BuildStepId } from "../../src/creator/steps.ts";
 export type { ChatEntry, DraftView } from "../../src/server/drafts.ts";
+export type { EditorEvent, EditorPass, ProposedChange } from "../../src/editor/assistant.ts";
+export type { EditorEntry, EditorView } from "../../src/server/editor.ts";
 export type { Character, WorldState } from "../../src/model.ts";
 export type { EventView, ModelInfo, WorldView } from "../../src/server/app.ts";
 export type { RunStatus } from "../../src/server/runs.ts";

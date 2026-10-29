@@ -6,6 +6,7 @@ import { blankDraft, draftProblems, draftSchema, publishable, slugify } from "..
 import type { Draft, DraftProblem } from "../creator/operations.ts";
 import type { BuildStepId } from "../creator/steps.ts";
 import type { AdventureEngine, DraftRecord, DraftSummary } from "../engine.ts";
+import { freeWorldId, WORLD_ID } from "../exchange.ts";
 import { EngineError, parseInput } from "../model.ts";
 
 // Drafts in the world creator: their storage, problems, and publication as a
@@ -41,7 +42,6 @@ export interface DraftView extends Omit<DraftRecord, "draft" | "chat"> {
 }
 
 export const MAX_CHAT_ENTRIES = 100;
-const WORLD_ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
 
 export class DraftService {
   private readonly busy = new Set<string>();
@@ -101,14 +101,15 @@ export class DraftService {
     if (!WORLD_ID.test(worldId)) {
       throw new EngineError("INVALID_INPUT", "A world ID is up to 64 letters, digits, hyphens, and underscores, starting with a letter or digit");
     }
-    const { seed, cast } = publishable(parseInput(draftSchema, record.draft), worldId);
+    const draft = parseInput(draftSchema, record.draft);
+    const { seed, cast } = publishable(draft, worldId);
     const worlds = await this.engine.listWorlds();
     if (worlds.some((world) => world.id === worldId) && record.worldId !== worldId) {
       throw new EngineError("REQUEST_CONFLICT", `A world called ${worldId} already exists. Choose another ID.`);
     }
     if (record.worldId !== worldId) record = await this.engine.updateDraft(id, record.revision, { worldId });
     await this.engine.createWorld(seed);
-    await this.engine.saveSetup(worldId, { cast, models: {} });
+    await this.engine.saveSetup(worldId, { cast, models: draft.models ?? {} });
     return this.view(await this.engine.updateDraft(id, record.revision, { published: true }));
   }
 
@@ -193,7 +194,7 @@ export class DraftService {
       chat: record.chat as ChatEntry[],
       problems: draftProblems(draft),
       busy: this.busy.has(record.id),
-      suggestedWorldId: record.worldId ?? await this.freeWorldId(draft.seed.name),
+      suggestedWorldId: record.worldId ?? await freeWorldId(this.engine, slugify(draft.seed.name)),
     };
   }
 
@@ -201,10 +202,4 @@ export class DraftService {
     if (this.busy.has(id)) throw new EngineError("DRAFT_BUSY", "The AI creator is working on this draft; wait for it or stop it");
   }
 
-  private async freeWorldId(name: string): Promise<string> {
-    const taken = new Set((await this.engine.listWorlds()).map((world) => world.id));
-    const base = slugify(name);
-    if (!taken.has(base)) return base;
-    for (let n = 2; ; n += 1) if (!taken.has(`${base}-${n}`)) return `${base}-${n}`;
-  }
 }

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { modelSetupSchema } from "../agents/models.ts";
 import { castProblems, castSchema, MAX_PREMISE_LENGTH, npcPersonaSchema, paceSchema, personaSchema } from "../agents/prompts.ts";
 import type { Cast } from "../agents/prompts.ts";
 import {
@@ -29,7 +30,12 @@ export const draftSeedSchema = worldSeedSchema.extend({
   characters: z.array(characterSchema).max(DRAFT_LIMITS.characters),
   challenges: z.array(challengeSchema).max(DRAFT_LIMITS.challenges),
 });
-export const draftSchema = z.strictObject({ seed: draftSeedSchema, cast: castSchema });
+export const draftSchema = z.strictObject({
+  seed: draftSeedSchema,
+  cast: castSchema,
+  /** Models chosen for the world's roles, carried in from an imported file; a published world starts with them. */
+  models: modelSetupSchema.optional(),
+});
 export type Draft = z.infer<typeof draftSchema>;
 export type DraftSeed = Draft["seed"];
 

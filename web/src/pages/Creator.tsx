@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Check, CircleAlert, Copy, ExternalLink, Hammer, LoaderCircle, MapPin, RotateCcw, Users } from "lucide-react";
+import { Check, CircleAlert, Copy, Download, ExternalLink, Hammer, LoaderCircle, MapPin, RotateCcw, Users } from "lucide-react";
 import { hasErrors, setWorld } from "../../../src/creator/operations.ts";
 import { rulesOf } from "../../../src/model.ts";
 import { api, errorText } from "../api.ts";
@@ -211,6 +211,17 @@ function Review({ editor, draftId, onGo }: { editor: DraftEditor; draftId: strin
     }
   }
 
+  /** Saves the draft's design to a file, after any unsaved change. */
+  async function download() {
+    setError(null);
+    try {
+      await editor.flush();
+      await api.exportDraft(draftId);
+    } catch (problem) {
+      setError(errorText(problem));
+    }
+  }
+
   async function copy() {
     setBusy(true);
     setError(null);
@@ -242,6 +253,12 @@ function Review({ editor, draftId, onGo }: { editor: DraftEditor; draftId: strin
     ["Threats", String(seed.threats?.length ?? 0)],
     ["Endings", String(seed.endings?.length ?? 0)],
   ];
+  // Model choices arrive only with an imported file; the world starts with them.
+  const models = draft.models;
+  const modelText = [
+    models?.character && `characters ${models.character}${models.characterEffort ? ` (${models.characterEffort} effort)` : ""}`,
+    models?.dm && `game master ${models.dm}${models.dmEffort ? ` (${models.dmEffort} effort)` : ""}`,
+  ].filter(Boolean).join("; ");
 
   return (
     <div className="stack" style={{ gap: 22 }}>
@@ -257,6 +274,12 @@ function Review({ editor, draftId, onGo }: { editor: DraftEditor; draftId: strin
         <dl className="stats">
           {stats.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
         </dl>
+        {modelText && <p className="muted small">Models from the imported file: {modelText}. You can change them under Agents once the world exists.</p>}
+        <div className="row wrap">
+          <button type="button" className="small" onClick={() => void download()} title="Save this draft's design to a file, to keep, share, or import elsewhere">
+            <Download size={14} />Download design
+          </button>
+        </div>
       </section>
       {published ? (
         <section className="publish-bar">

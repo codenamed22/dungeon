@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { z } from "zod";
+import { REASONING_EFFORTS } from "./models.ts";
 import { ProviderConfigError, ProviderError } from "./provider.ts";
 import type { AgentRole, ModelProvider, ModelRequest, ModelResponse, ModelUsage, ProviderFailure } from "./provider.ts";
 
@@ -10,7 +11,8 @@ export const DEFAULT_REASONING_EFFORT = "low";
 export const DEFAULT_MAX_OUTPUT_TOKENS = 4096;
 /** Writing a world takes many tool calls in one reply, with reasoning counted against the limit too. */
 export const DEFAULT_CREATOR_MAX_TOKENS = 16_000;
-export const REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+export { REASONING_EFFORTS };
 
 const API = "https://openrouter.ai/api/v1";
 const TIMEOUT_MS = 120_000;

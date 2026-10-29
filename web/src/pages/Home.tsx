@@ -1,16 +1,19 @@
-import { useEffect, useState } from "react";
-import { Clock, FilePen, Globe, KeyRound, Plus, Trash2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Clock, FilePen, Globe, KeyRound, Plus, Trash2, Upload } from "lucide-react";
 import { api, errorText } from "../api.ts";
 import { ago, clock } from "../format.ts";
 import { draftPath, linkProps, navigate, worldPath } from "../router.ts";
 import type { DraftSummary, WorldSummary } from "../types.ts";
 import { EmptyState } from "../ui/controls.tsx";
+import { readJsonFile } from "../ui/files.ts";
 
 export function Home() {
   const [worlds, setWorlds] = useState<WorldSummary[] | null>(null);
   const [drafts, setDrafts] = useState<DraftSummary[]>([]);
   const [keyConfigured, setKeyConfigured] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
+  const picker = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     void Promise.all([api.worlds(), api.drafts()])
@@ -32,6 +35,24 @@ export function Home() {
     }
   }
 
+  /** A design opens as a new draft; a full save opens as a new world. */
+  async function importFile(file: File) {
+    setImporting(true);
+    setError(null);
+    try {
+      const imported = await api.importWorld(await readJsonFile(file));
+      navigate(imported.kind === "design" ? draftPath(imported.draft.id) : worldPath(imported.world.world.id));
+    } catch (problem) {
+      setError(errorText(problem));
+      setImporting(false);
+    }
+  }
+
+  const importButton = (
+    <button type="button" disabled={importing} onClick={() => picker.current?.click()} title="Open a world file: a design becomes a draft, a full save a world">
+      <Upload size={16} />{importing ? "Importing…" : "Import"}
+    </button>
+  );
   const writing = drafts.filter((draft) => draft.publishedAt === null);
   return (
     <main className="page">
@@ -41,8 +62,17 @@ export function Home() {
           <h1>Your worlds</h1>
           <p>Write a world, cast AI characters, watch them play, and steer the story. The engine decides every outcome.</p>
         </div>
-        <button type="button" className="primary" onClick={() => navigate("/new")}><Plus size={16} />New world</button>
+        <div className="row wrap">
+          {importButton}
+          <button type="button" className="primary" onClick={() => navigate("/new")}><Plus size={16} />New world</button>
+        </div>
       </div>
+      <input ref={picker} type="file" accept=".json,application/json" hidden aria-label="World file to import"
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          event.target.value = "";
+          if (file) void importFile(file);
+        }} />
       {error && <p className="error">{error}</p>}
       {!keyConfigured && (
         <p className="notice">
@@ -80,8 +110,11 @@ export function Home() {
       {worlds === null ? <p className="muted">Loading…</p> : worlds.length === 0 ? (
         <div className="card dashed">
           <EmptyState icon={<Globe size={22} />} title="No worlds yet">
-            <p>Write one with the creator, or copy a bundled story.</p>
-            <button type="button" className="primary" onClick={() => navigate("/new")}><Plus size={16} />New world</button>
+            <p>Write one with the creator, copy a bundled story, or import a world file.</p>
+            <div className="row wrap">
+              {importButton}
+              <button type="button" className="primary" onClick={() => navigate("/new")}><Plus size={16} />New world</button>
+            </div>
           </EmptyState>
         </div>
       ) : (

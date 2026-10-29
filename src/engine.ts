@@ -13,7 +13,9 @@ import {
   worldStateSchema,
 } from "./model.ts";
 import type { AdventureEvent, EventData, WorldState } from "./model.ts";
-import { actorOf, applyEvent, d20, isNarratable, MENTAL_EVENTS, Replayer, resolveCommand, retractionProblem } from "./rules.ts";
+import {
+  actorOf, applyEvent, d20, isNarratable, MENTAL_EVENTS, Replayer, resolveCommand, retconAudience as audienceOfRetcon, retractionProblem,
+} from "./rules.ts";
 import type { CommittedEvent, Evidence, Roll } from "./rules.ts";
 import { parseStoredEvent } from "./upcast.ts";
 
@@ -142,11 +144,27 @@ const PAGE_SIZE = 500;
 const SEARCH_VECTOR = `jsonb_to_tsvector('english'::regconfig, e.event -> 'data', '["string"]'::jsonb)`;
 
 /** SQL true for an event `e` that a later retcon withdrew; agents never see those. `ns` is the schema. */
-const retracted = (ns: string) => `EXISTS (
+const withdrawn = (ns: string) => `EXISTS (
   SELECT 1 FROM ${ns}.adventure_events r
   WHERE r.world_id = e.world_id AND r.sequence > e.sequence
     AND r.event -> 'data' ->> 'type' = 'retraction'
+    AND NOT (r.event -> 'data' ? 'replacement')
     AND (r.event -> 'data' ->> 'targetSequence')::bigint = e.sequence)`;
+
+/** SQL for the latest words the director gave each reworded line of world $1, as rows of (target, words). */
+const rewordings = (ns: string) => `SELECT DISTINCT ON (target) (r.event -> 'data' ->> 'targetSequence')::bigint AS target,
+    r.event -> 'data' ->> 'replacement' AS words
+  FROM ${ns}.adventure_events r
+  WHERE r.world_id = $1 AND r.event -> 'data' ->> 'type' = 'retraction' AND r.event -> 'data' ? 'replacement'
+  ORDER BY target, r.sequence DESC`;
+
+/** Lines the director can reword; only these carry text a retcon replaces. */
+const LINES = new Set<EventData["type"]>(["narration", "utterance", "introduced"]);
+
+/** The event as agents see it: with `words` in place of its text, if the director reworded it. */
+function reworded(event: AdventureEvent, words: string | null | undefined): AdventureEvent {
+  return words == null || !LINES.has(event.data.type) ? event : { ...event, data: { ...event.data, text: words } as EventData };
+}
 
 export class AdventureEngine {
   private readonly pool: Pool;
@@ -252,25 +270,7 @@ export class AdventureEngine {
       if (requestAt(throughSequence + 1) !== undefined && requestAt(throughSequence + 1) === requestAt(throughSequence)) {
         throw new EngineError("INVALID_INPUT", `Revision ${throughSequence} is in the middle of a turn; branch where a turn ends`);
       }
-      const replayer = new Replayer();
-      const committed: CommittedEvent[] = [];
-      for await (const page of this.eventPages(client, sourceId, throughSequence)) {
-        for (const stored of page) {
-          const event: AdventureEvent = { ...stored, worldId: newId };
-          if (event.data.type === "world_created") {
-            event.data = { ...event.data, seed: { ...event.data.seed, id: newId, ...(name === undefined ? {} : { name }) } };
-          }
-          committed.push({ event, perceivers: replayer.apply(event) });
-        }
-      }
-      const state = replayer.state!;
-      const inserted = await client.query(
-        `INSERT INTO ${this.namespace}.adventure_worlds (id, state, revision)
-         VALUES ($1, $2::jsonb, $3) ON CONFLICT (id) DO NOTHING RETURNING id`,
-        [newId, JSON.stringify(state), state.revision],
-      );
-      if (inserted.rowCount !== 1) throw new EngineError("REQUEST_CONFLICT", `World ${newId} already exists`);
-      await this.insertCommitted(client, committed);
+      const state = await this.insertHistory(client, newId, name, this.eventPages(client, sourceId, throughSequence));
       await client.query(
         `INSERT INTO ${this.namespace}.adventure_receipts (world_id, request_id, command, sequence, result_state, event_count)
          SELECT $2, request_id, command, sequence, result_state, event_count FROM ${this.namespace}.adventure_receipts
@@ -284,6 +284,62 @@ export class AdventureEngine {
       );
       return state;
     });
+  }
+
+  /**
+   * Creates a world from a whole history brought in from elsewhere, such as a
+   * file: replayed and checked under the new ID before anything is stored.
+   * `prepare` sees the replayed world and returns the director state to store
+   * with it, or throws to refuse it.
+   */
+  async importWorld(
+    newId: string,
+    events: readonly unknown[],
+    prepare: (state: WorldState) => { setup: unknown; muted: readonly string[] },
+  ): Promise<WorldState> {
+    const parsed = events.map((event, index) => {
+      try {
+        return parseStoredEvent(event);
+      } catch (problem) {
+        throw new EngineError("INVALID_INPUT", `Event ${index + 1} in the file isn't valid: ${problem instanceof Error ? problem.message : String(problem)}`);
+      }
+    });
+    return this.transaction(async (client) => {
+      let state: WorldState;
+      try {
+        state = await this.insertHistory(client, newId, undefined, [parsed]);
+      } catch (problem) {
+        if (problem instanceof EngineError && problem.code === "CORRUPT_STORAGE") {
+          throw new EngineError("INVALID_INPUT", `The file's history doesn't replay: ${problem.message}`);
+        }
+        throw problem;
+      }
+      const { setup, muted } = prepare(state);
+      await client.query(
+        `INSERT INTO ${this.namespace}.adventure_setups (world_id, setup) VALUES ($1, $2::jsonb)`,
+        [newId, JSON.stringify(setup)],
+      );
+      if (muted.length > 0) {
+        await client.query(
+          `INSERT INTO ${this.namespace}.adventure_mutes (world_id, character_id) SELECT $1, unnest($2::text[]) ON CONFLICT DO NOTHING`,
+          [newId, muted],
+        );
+      }
+      return state;
+    });
+  }
+
+  /** A world's whole history, in order, for saving to a file. */
+  async exportEvents(worldId: string): Promise<AdventureEvent[]> {
+    await this.getWorld(worldId);
+    const client = await this.pool.connect();
+    try {
+      const events: AdventureEvent[] = [];
+      for await (const page of this.eventPages(client, worldId)) events.push(...page);
+      return events;
+    } finally {
+      client.release();
+    }
   }
 
   /**
@@ -316,7 +372,7 @@ export class AdventureEngine {
       const audience = command.role === "dm"
         ? await this.narrationAudience(client, worldId, state, command.action.aboutSequences)
         : command.role === "director" && command.action.type === "retcon"
-          ? await this.retconAudience(client, worldId, command.action.sequence)
+          ? await this.retconAudience(client, worldId, command.action)
           : undefined;
       const evidence = command.role === "character" && command.note
         ? await this.evidence(client, worldId, command.note.evidence)
@@ -374,11 +430,23 @@ export class AdventureEngine {
        WHERE e.world_id = $1 AND d.character_id = $2
          AND ($4::text[] IS NULL OR e.event -> 'data' ->> 'type' = ANY($4::text[]))
          AND NOT (e.event -> 'data' ->> 'type' = ANY($5::text[]))
-         AND NOT ${retracted(this.namespace)}
+         AND NOT ${withdrawn(this.namespace)}
        ORDER BY e.sequence DESC LIMIT $3`,
       [worldId, characterId, limit, filter.types ?? null, filter.exclude ?? []],
     );
-    return result.rows.map((row) => parseStoredEvent(row.event)).reverse();
+    return this.withRewordings(worldId, result.rows.map((row) => parseStoredEvent(row.event)).reverse());
+  }
+
+  /** Puts the director's latest words in place of each reworded line among `events`. */
+  private async withRewordings(worldId: string, events: AdventureEvent[]): Promise<AdventureEvent[]> {
+    const lines = events.filter((event) => LINES.has(event.data.type)).map((event) => event.sequence);
+    if (lines.length === 0) return events;
+    const result = await this.pool.query(
+      `SELECT target, words FROM (${rewordings(this.namespace)}) AS latest WHERE target = ANY($2::bigint[])`,
+      [worldId, lines],
+    );
+    const words = new Map((result.rows as { target: string; words: string }[]).map((row) => [Number(row.target), row.words]));
+    return events.map((event) => reworded(event, words.get(event.sequence)));
   }
 
   /**
@@ -386,6 +454,7 @@ export class AdventureEngine {
    * leaving out its thoughts (notes and goals). The deliveries join enforces
    * permission inside the query, so an event the character did not perceive
    * never ranks, and never reaches a snippet, which is made only for results.
+   * A reworded line matches, and is shown, by its new words only.
    */
   async searchMemories(
     worldId: string,
@@ -402,26 +471,30 @@ export class AdventureEngine {
     await this.requireCharacter(worldId, characterId);
     if (!query.trim()) return [];
     const result = await this.pool.query(
-      `WITH matches AS (
-         SELECT e.sequence, e.event, q.query, ts_rank(${SEARCH_VECTOR}, q.query) AS rank
+      `WITH edits AS (${rewordings(this.namespace)}),
+       matches AS (
+         SELECT e.sequence, e.event, edits.words, q.query,
+           ts_rank(COALESCE(to_tsvector('english', edits.words), ${SEARCH_VECTOR}), q.query) AS rank
          FROM ${this.namespace}.adventure_events e
          JOIN ${this.namespace}.adventure_deliveries d
            ON d.world_id = e.world_id AND d.sequence = e.sequence AND d.character_id = $2
          CROSS JOIN websearch_to_tsquery('english', $3) AS q(query)
+         LEFT JOIN edits ON edits.target = e.sequence
          WHERE e.world_id = $1 AND e.sequence < $4
            AND NOT (e.event -> 'data' ->> 'type' = ANY($5::text[]))
-           AND NOT ${retracted(this.namespace)}
-           AND ${SEARCH_VECTOR} @@ q.query
+           AND NOT ${withdrawn(this.namespace)}
+           AND ((edits.words IS NULL AND ${SEARCH_VECTOR} @@ q.query)
+             OR (edits.words IS NOT NULL AND to_tsvector('english', edits.words) @@ q.query))
          ORDER BY rank DESC, e.sequence DESC
          LIMIT $6
        )
-       SELECT event, rank,
-         CASE WHEN event -> 'data' ? 'text' THEN ts_headline('english', event -> 'data' ->> 'text', query,
+       SELECT event, words, rank,
+         CASE WHEN words IS NOT NULL OR event -> 'data' ? 'text' THEN ts_headline('english', COALESCE(words, event -> 'data' ->> 'text'), query,
            'MaxWords=20, MinWords=8, StartSel=«, StopSel=»') END AS snippet
        FROM matches ORDER BY rank DESC, sequence DESC`,
       [worldId, characterId, query, before, MENTAL_EVENTS, limit],
     );
-    return result.rows.map((row) => ({ event: parseStoredEvent(row.event), rank: Number(row.rank), snippet: row.snippet }));
+    return result.rows.map((row) => ({ event: reworded(parseStoredEvent(row.event), row.words), rank: Number(row.rank), snippet: row.snippet }));
   }
 
   /** Characters who perceived one event, sorted. */
@@ -584,6 +657,25 @@ export class AdventureEngine {
     );
   }
 
+  /** The story editor's chat log for a world, oldest first; empty if it has none. The caller validates it. */
+  async getEditorChat(worldId: string): Promise<unknown[]> {
+    await this.getWorld(worldId);
+    const result = await this.pool.query(
+      `SELECT chat FROM ${this.namespace}.world_editor_chats WHERE world_id = $1`,
+      [worldId],
+    );
+    return (result.rows[0]?.chat as unknown[] | undefined) ?? [];
+  }
+
+  async saveEditorChat(worldId: string, chat: readonly unknown[]): Promise<void> {
+    await this.getWorld(worldId);
+    await this.pool.query(
+      `INSERT INTO ${this.namespace}.world_editor_chats (world_id, chat) VALUES ($1, $2::jsonb)
+       ON CONFLICT (world_id) DO UPDATE SET chat = EXCLUDED.chat, updated_at = now()`,
+      [worldId, JSON.stringify(chat)],
+    );
+  }
+
   async listDrafts(): Promise<DraftSummary[]> {
     const result = await this.pool.query(
       `SELECT id, draft -> 'seed' ->> 'name' AS name, revision, world_id, published_at, updated_at
@@ -732,21 +824,27 @@ export class AdventureEngine {
     return [...new Set(sequences.flatMap((sequence) => stored.get(sequence) ?? []))].sort();
   }
 
-  /** A retcon reaches whoever perceived the event it withdraws, which must be withdrawable. */
-  private async retconAudience(client: PoolClient, worldId: string, sequence: number): Promise<string[]> {
+  /** Checks that a retcon may change its target, and returns who perceives it (see retconAudience in rules.ts). */
+  private async retconAudience(
+    client: PoolClient,
+    worldId: string,
+    action: { sequence: number; text?: string | undefined; replacement?: string | undefined },
+  ): Promise<string[]> {
+    const { sequence } = action;
     const target = await client.query(
       `SELECT event FROM ${this.namespace}.adventure_events WHERE world_id = $1 AND sequence = $2 AND sequence > 1`,
       [worldId, sequence],
     );
     const earlier = await client.query(
       `SELECT 1 FROM ${this.namespace}.adventure_events
-       WHERE world_id = $1 AND event -> 'data' ->> 'type' = 'retraction' AND (event -> 'data' ->> 'targetSequence')::bigint = $2`,
+       WHERE world_id = $1 AND event -> 'data' ->> 'type' = 'retraction' AND NOT (event -> 'data' ? 'replacement')
+         AND (event -> 'data' ->> 'targetSequence')::bigint = $2`,
       [worldId, sequence],
     );
     const event = target.rows[0] ? parseStoredEvent(target.rows[0].event) : undefined;
-    const problem = retractionProblem(event, (earlier.rowCount ?? 0) > 0);
+    const problem = retractionProblem(event, action.replacement, (earlier.rowCount ?? 0) > 0);
     if (problem) throw new EngineError("INVALID_ACTION", `Cannot retcon #${sequence}: ${problem}`);
-    return (await this.deliveries(client, worldId, sequence, sequence)).get(sequence) ?? [];
+    return [...audienceOfRetcon(action, (await this.deliveries(client, worldId, sequence, sequence)).get(sequence) ?? [])];
   }
 
   private async deliveries(
@@ -783,6 +881,40 @@ export class AdventureEngine {
       if (page.length < PAGE_SIZE) return;
       after = page.at(-1)!.sequence;
     }
+  }
+
+  /**
+   * Stores a history as a new world: each event moves to the new ID (the seed
+   * too, with an optional new name), and is replayed for its state and
+   * perceivers. Replay rejects a history that doesn't hold together.
+   */
+  private async insertHistory(
+    client: PoolClient,
+    newId: string,
+    name: string | undefined,
+    pages: AsyncIterable<AdventureEvent[]> | Iterable<AdventureEvent[]>,
+  ): Promise<WorldState> {
+    const replayer = new Replayer();
+    const committed: CommittedEvent[] = [];
+    for await (const page of pages) {
+      for (const stored of page) {
+        const event: AdventureEvent = { ...stored, worldId: newId };
+        if (event.data.type === "world_created") {
+          event.data = { ...event.data, seed: { ...event.data.seed, id: newId, ...(name === undefined ? {} : { name }) } };
+        }
+        committed.push({ event, perceivers: replayer.apply(event) });
+      }
+    }
+    const state = replayer.state;
+    if (!state) throw new EngineError("CORRUPT_STORAGE", "There are no events");
+    const inserted = await client.query(
+      `INSERT INTO ${this.namespace}.adventure_worlds (id, state, revision)
+       VALUES ($1, $2::jsonb, $3) ON CONFLICT (id) DO NOTHING RETURNING id`,
+      [newId, JSON.stringify(state), state.revision],
+    );
+    if (inserted.rowCount !== 1) throw new EngineError("REQUEST_CONFLICT", `World ${newId} already exists`);
+    await this.insertCommitted(client, committed);
+    return state;
   }
 
   /** Reconstructs a committed command's events and the state right after them. */

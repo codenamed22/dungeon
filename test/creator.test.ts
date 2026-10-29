@@ -7,8 +7,6 @@ import path from "node:path";
 import test from "node:test";
 import { Pool } from "pg";
 import { ADVENTURES } from "../src/adventures/index.ts";
-import { OpenRouterChat } from "../src/agents/openrouter.ts";
-import type { ChatSettings, OpenRouterModel } from "../src/agents/openrouter.ts";
 import { castProblems, creatorSystemPrompt } from "../src/agents/prompts.ts";
 import { ProviderConfigError, ScriptedProvider } from "../src/agents/provider.ts";
 import { runCreator } from "../src/creator/assistant.ts";
@@ -28,6 +26,8 @@ import { sampleWorld } from "../src/sample-world.ts";
 import { createApp } from "../src/server/app.ts";
 import { DraftService } from "../src/server/drafts.ts";
 import { RunManager } from "../src/server/runs.ts";
+import { catalog, chatWith, completion, hang, simulatedOpenRouter, toolCall } from "./fake-openrouter.ts";
+import type { Handler } from "./fake-openrouter.ts";
 import { errorCode } from "./support.ts";
 
 const connectionString = process.env.TEST_DATABASE_URL;
@@ -369,45 +369,6 @@ test("the AI creator can read every bundled adventure as an example, and its ins
   assert.ok(prompt.indexOf("Example worlds") < prompt.indexOf("How to work:"));
   assert.doesNotMatch(creatorSystemPrompt(), /Example worlds/);
 });
-
-// A simulated OpenRouter: each request goes to a handler, which returns the completion or waits to be cancelled.
-type Handler = (body: Record<string, any>, signal: AbortSignal) => Promise<unknown>;
-
-function simulatedOpenRouter(handler: () => Handler): typeof fetch {
-  return (async (_url: string, init: RequestInit) => {
-    const reply = await handler()(JSON.parse(String(init.body)), init.signal!);
-    return new Response(JSON.stringify(reply), { status: 200, headers: { "Content-Type": "application/json" } });
-  }) as typeof fetch;
-}
-
-/** Waits until the request is cancelled, then fails as fetch does. */
-const hang = (signal: AbortSignal) => new Promise<never>((_, reject) => {
-  signal.addEventListener("abort", () => reject(new DOMException("The operation was aborted", "AbortError")), { once: true });
-});
-
-const toolCall = (id: string, name: string, args: unknown) => ({
-  id, type: "function", function: { name, arguments: typeof args === "string" ? args : JSON.stringify(args) },
-});
-
-function completion(message: Record<string, unknown>, usage: Record<string, number> = { prompt_tokens: 1000, completion_tokens: 100, cost: 0.002 }) {
-  return {
-    model: "test/creator",
-    choices: [{ finish_reason: message.tool_calls ? "tool_calls" : "stop", message: { role: "assistant", content: null, ...message } }],
-    usage,
-  };
-}
-
-const catalog: OpenRouterModel[] = [
-  { id: "test/creator", name: "Creator", supported_parameters: ["tools", "max_tokens", "reasoning"], reasoning: { supported_efforts: ["low", "high"] } },
-  { id: "test/plain", name: "Plain", supported_parameters: ["max_tokens", "response_format"] },
-];
-
-function chatWith(handler: Handler, settings: Partial<ChatSettings> = {}): OpenRouterChat {
-  return OpenRouterChat.create({
-    apiKey: "test-key", model: "test/creator", effort: undefined, maxOutputTokens: 16_000, maxRetries: 0,
-    sleep: async () => {}, fetch: simulatedOpenRouter(() => handler), ...settings,
-  }, catalog);
-}
 
 async function creatorRun(
   handler: Handler,
