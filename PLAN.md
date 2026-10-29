@@ -447,6 +447,17 @@
   a run from the panel, at 1440 px and 390 px, with no sideways scrolling and
   no console errors.
 
+  Live check 2026-10-29 on DeepSeek V4 Flash, on the Dry Aqueduct's scripted
+  opening in local PostgreSQL, $0.0045 in all:
+  - Asked only to review, it judged the opening sound, citing lines, and
+    proposed nothing.
+  - Told that Bram sounded like Mira and Tamsin's warning ran long, it
+    proposed a persona change and two edits; the fix made all three.
+  - Two problems, both fixed: it named characters ("Bram") where the tools
+    took IDs, so the tools now accept a name or an ID in any case if only
+    one matches; and it quoted the new words, which doubled the quotation
+    marks on speech, so quotes around a whole edit are dropped.
+
   Verified: typecheck, both builds, and all 230 tests pass.
 - Development and tests use local PostgreSQL or a Neon development branch, not the
   `production` branch.

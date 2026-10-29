@@ -131,6 +131,34 @@ const name = (state: WorldState, id: string) => state.characters.find((character
 const place = (state: WorldState, id: string) => state.locations.find((location) => location.id === id)?.name ?? id;
 const clip = (text: string, length = 80) => (text.length > length ? `${text.slice(0, length - 1)}…` : text);
 
+/** New words for a line, without quotation marks around them all: speech gets its own. */
+function unquoted(words: string): string {
+  const inner = /^["“](.*)["”]$/s.exec(words)?.[1];
+  return inner !== undefined && inner.trim() !== "" && !/["“”]/.test(inner) ? inner.trim() : words;
+}
+
+/** A character or place as the model named it: its ID, or else its ID or name in any case, if only one matches. */
+function resolve(list: readonly { id: string; name: string }[], reference: unknown): unknown {
+  if (typeof reference !== "string" || list.some((entry) => entry.id === reference)) return reference;
+  const wanted = reference.trim().toLowerCase();
+  const matches = list.filter((entry) => entry.id.toLowerCase() === wanted || entry.name.toLowerCase() === wanted);
+  return matches.length === 1 ? matches[0]!.id : reference;
+}
+
+/** The story shows names and the tools take IDs, so a name stands for its ID. */
+function withIds(state: WorldState, args: Record<string, unknown>): Record<string, unknown> {
+  const place = (reference: unknown) => resolve(state.locations, reference);
+  const route = (way: unknown) => (way !== null && typeof way === "object" && !Array.isArray(way)
+    ? { ...way, fromId: place((way as Record<string, unknown>).fromId), toId: place((way as Record<string, unknown>).toId) }
+    : way);
+  const resolved = { ...args };
+  if ("characterId" in args) resolved.characterId = resolve(state.characters, args.characterId);
+  if ("placeId" in args) resolved.placeId = place(args.placeId);
+  if (Array.isArray(args.placeIds)) resolved.placeIds = args.placeIds.map(place);
+  for (const key of ["block", "open"]) if (Array.isArray(args[key])) resolved[key] = args[key].map(route);
+  return resolved;
+}
+
 /** Commits a director command and reports it, by the line it made. */
 async function directed(context: EditorContext, action: Extract<Command, { role: "director" }>["action"], summary: (sequence: number) => string): Promise<Outcome> {
   const result: TurnResult = await direct(context.engine, context.worldId, action);
@@ -241,8 +269,8 @@ const tools: readonly EditorTool[] = [
   tool("edit_line", "Reword a line of speech, narration, or an introduced event. Agents who heard it remember the new words instead; nobody is told.",
     z.strictObject({
       line: z.number().int().min(2).describe("The line's #number"),
-      words: z.string().trim().min(1).max(1000).describe("The whole line as it should read"),
-    }), true, (context, { line, words }) => directed(context, { type: "retcon", sequence: line, replacement: words }, (sequence) => `Reworded #${line} (#${sequence}).`)),
+      words: z.string().trim().min(1).max(1000).describe("The whole line as it should read, without quotation marks around it"),
+    }), true, (context, { line, words }) => directed(context, { type: "retcon", sequence: line, replacement: unquoted(words) }, (sequence) => `Reworded #${line} (#${sequence}).`)),
   tool("delete_line", "Delete a line of speech, narration, or an introduced event that changed no ways. Agents who heard it forget it; with a note, "
     + "they are told what really happened instead.", z.strictObject({
     line: z.number().int().min(2).describe("The line's #number"),
@@ -292,6 +320,10 @@ export async function runEditorTool(context: EditorContext, pass: EditorPass, to
     args = argumentsText.trim() === "" ? {} : JSON.parse(argumentsText);
   } catch {
     return failed("The arguments were not valid JSON.");
+  }
+  if (args !== null && typeof args === "object" && !Array.isArray(args)) {
+    const given = args as Record<string, unknown>;
+    if (["characterId", "placeId", "placeIds", "block", "open"].some((key) => key in given)) args = withIds(await context.engine.getWorld(context.worldId), given);
   }
   const parsed = entry.input.safeParse(args);
   if (!parsed.success) return failed(`Invalid arguments: ${z.prettifyError(parsed.error)}`);

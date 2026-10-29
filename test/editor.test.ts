@@ -107,9 +107,10 @@ test("the story editor reviews a world in play, then makes the approved changes"
       const { handler: replies, requests } = scripted([
         completion({
           tool_calls: [
-            toolCall("a", "set_persona", { characterId: "mira", voice }),
-            toolCall("b", "steer", { text: "Try the bars now.", characterId: "bram" }),
-            toolCall("c", "edit_line", { line: 2, words: "Lantern first. Then the bars, before the water rises." }),
+            // Named as the story names them, and quoted as the review quoted them.
+            toolCall("a", "set_persona", { characterId: "Mira", voice }),
+            toolCall("b", "steer", { text: "Try the bars now.", characterId: "Bram" }),
+            toolCall("c", "edit_line", { line: 2, words: "\u201cLantern first. Then the bars, before the water rises.\u201d" }),
             toolCall("d", "propose_changes", { changes: [{ kind: "event", title: "More", detail: "More." }] }),
             toolCall("e", "bring_in", { characterId: "nobody", placeId: "camp" }),
           ],
@@ -140,6 +141,7 @@ test("the story editor reviews a world in play, then makes the approved changes"
 
       const committed = await engine.getEvents("story", opening.revision, 10);
       assert.deepEqual(committed.map((event) => event.data.type), ["steering", "retraction"]);
+      assert.equal(committed[0]!.data.type === "steering" && committed[0]!.data.targetId, "bram");
       assert.deepEqual(run.committed, committed.map((event) => event.sequence));
       const line = (await engine.getPerceivedEvents("story", "mira", 20)).find((event) => event.sequence === 2);
       assert.equal(line?.data.type === "utterance" && line.data.text, "Lantern first. Then the bars, before the water rises.");
