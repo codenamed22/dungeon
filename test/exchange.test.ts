@@ -87,8 +87,8 @@ test("worlds go to files and come back: a design as a draft, a save as a world t
     await refused([...events, { ...events[1]!, sequence: events.length + 1, requestId: "forged", source: "dm", data: { type: "narration", text: "A door opens.", aboutSequences: [1] } }],
       /doesn't replay: Narration references an event that cannot be narrated/);
     await refused(events.map((event, index) => (index === 1 ? { ...event, data: { type: "utterance" } } : event)), /^Event 2 in the file \(utterance\) isn't valid/);
-    await refused(events.map((event, index) => (index === 1 ? { ...event, data: { type: "steering", text: "x".repeat(501) } } : event)),
-      /^Event 2 in the file \(steering\) isn't valid: data\.text is too long \(at most 500 characters\)$/);
+    await refused(events.map((event, index) => (index === 1 ? { ...event, data: { type: "steering", text: "x".repeat(1001) } } : event)),
+      /^Event 2 in the file \(steering\) isn't valid: data\.text is too long \(at most 1000 characters\)$/);
     await assert.rejects(engine.getWorld("tampered"), errorCode("NOT_FOUND"));
     // So is a setup that doesn't fit the world.
     await assert.rejects(
@@ -137,6 +137,6 @@ test("a world file says what it is, and a file from elsewhere or a newer version
   refuse({ ...design, version: 2 }, /newer version of Dungeons \(file version 2\)/);
   refuse({ ...design, kind: "everything" }, /kind/);
   refuse({ ...design, draft: { ...design.draft, chat: [] } }, /chat/);
-  const wordy = { ...design, draft: { ...design.draft, cast: { ...design.draft.cast, narratorStyle: "x".repeat(1001) } } };
-  refuse(wordy, /^The file isn't valid: draft\.cast\.narratorStyle is too long \(at most 1000 characters\)$/);
+  const wordy = { ...design, draft: { ...design.draft, cast: { ...design.draft.cast, narratorStyle: "x".repeat(2001) } } };
+  refuse(wordy, /^The file isn't valid: draft\.cast\.narratorStyle is too long \(at most 2000 characters\)$/);
 });

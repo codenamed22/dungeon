@@ -68,7 +68,7 @@ export function DirectorBox({ worldId, view }: { worldId: string; view: WorldVie
       <textarea
         rows={2}
         value={text}
-        maxLength={mode === "steer" ? 500 : 1000}
+        maxLength={mode === "steer" ? 1000 : 2000}
         onChange={(event) => setText(event.target.value)}
         placeholder={mode === "steer"
           ? "e.g. You have talked long enough. Try something different, or ask the person who knows."

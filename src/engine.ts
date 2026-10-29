@@ -491,7 +491,7 @@ export class AdventureEngine {
     if (!Number.isInteger(limit) || limit < 1 || limit > 100 || !Number.isSafeInteger(before) || before < 1) {
       throw new EngineError("INVALID_INPUT", "Limit must be between 1 and 100, and before a positive sequence");
     }
-    if (query.length > 500) throw new EngineError("INVALID_INPUT", "A memory search is at most 500 characters");
+    if (query.length > 1000) throw new EngineError("INVALID_INPUT", "A memory search is at most 1000 characters");
     await this.requireCharacter(worldId, characterId);
     if (!query.trim()) return [];
     const result = await this.pool.query(

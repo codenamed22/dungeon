@@ -23,8 +23,8 @@ export const CHANGE_KINDS = ["persona", "style", "steer", "event", "entrance", "
 
 const proposedChangeSchema = z.strictObject({
   kind: z.enum(CHANGE_KINDS).describe("What sort of change: a persona, the premise or narrator style or pace, steering, a story event, someone arriving or leaving, or rewording or deleting a line"),
-  title: z.string().trim().min(1).max(120).describe("The change in a few words, e.g. \"Give Mira a reason to hurry\""),
-  detail: z.string().trim().min(1).max(800).describe("Exactly what you would do, with the new words, and why, citing lines by #number"),
+  title: z.string().trim().min(1).max(200).describe("The change in a few words, e.g. \"Give Mira a reason to hurry\""),
+  detail: z.string().trim().min(1).max(2000).describe("Exactly what you would do, with the new words, and why, citing lines by #number"),
 });
 export type ProposedChange = z.infer<typeof proposedChangeSchema>;
 
@@ -229,7 +229,7 @@ const tools: readonly EditorTool[] = [
   tool("set_style", "Change the premise every agent reads, the narrator's style, or the pace. Give only what changes.",
     setWorldInput.pick({ premise: true, narratorStyle: true, pace: true }), true, (context, input) => castChange(context, (draft) => setWorld(draft, input))),
   tool("steer", "Ask one main character, or everyone, to reconsider: outside the story, seen once in their next turn, never remembered.", z.strictObject({
-    text: z.string().trim().min(1).max(500).describe("What to tell them, e.g. \"You have talked long enough; try the door.\""),
+    text: z.string().trim().min(1).max(1000).describe("What to tell them, e.g. \"You have talked long enough; try the door.\""),
     characterId: ref.optional().describe("ID of the main character to steer; everyone if left out"),
   }), true, async (context, { text, characterId }) => {
     const state = await context.engine.getWorld(context.worldId);
@@ -238,7 +238,7 @@ const tools: readonly EditorTool[] = [
   }),
   tool("introduce", "Make something happen in the story, where you say: everyone there perceives and remembers it. It can block or open ways.",
     z.strictObject({
-      text: z.string().trim().min(1).max(1000).describe("What happens, as those present see it"),
+      text: z.string().trim().min(1).max(2000).describe("What happens, as those present see it"),
       placeIds: z.array(ref).min(1).max(20).optional().describe("IDs of the places where it happens; everywhere if left out"),
       block: z.array(routeInput).min(1).max(10).optional().describe("Ways it blocks"),
       open: z.array(routeInput).min(1).max(10).optional().describe("Ways it opens"),
@@ -254,7 +254,7 @@ const tools: readonly EditorTool[] = [
   tool("bring_in", "Bring someone who is away from the scene into it, at a place.", z.strictObject({
     characterId: ref.describe("ID of the character"),
     placeId: ref.describe("ID of the place they arrive at"),
-    text: z.string().trim().min(1).max(1000).optional().describe("How their arrival looks to those there"),
+    text: z.string().trim().min(1).max(2000).optional().describe("How their arrival looks to those there"),
   }), true, async (context, { characterId, placeId, text }) => {
     const state = await context.engine.getWorld(context.worldId);
     return directed(context, { type: "enter", characterId, locationId: placeId, ...(text ? { text } : {}) },
@@ -262,7 +262,7 @@ const tools: readonly EditorTool[] = [
   }),
   tool("send_away", "Send someone in the scene away from it, until something brings them back.", z.strictObject({
     characterId: ref.describe("ID of the character"),
-    text: z.string().trim().min(1).max(1000).optional().describe("How their leaving looks to those there"),
+    text: z.string().trim().min(1).max(2000).optional().describe("How their leaving looks to those there"),
   }), true, async (context, { characterId, text }) => {
     const state = await context.engine.getWorld(context.worldId);
     return directed(context, { type: "exit", characterId, ...(text ? { text } : {}) }, (sequence) => `Sent ${name(state, characterId)} away (#${sequence}).`);
@@ -270,12 +270,12 @@ const tools: readonly EditorTool[] = [
   tool("edit_line", "Reword a line of speech, narration, or an introduced event. Agents who heard it remember the new words instead; nobody is told.",
     z.strictObject({
       line: z.number().int().min(2).describe("The line's #number"),
-      words: z.string().trim().min(1).max(1000).describe("The whole line as it should read, without quotation marks around it"),
+      words: z.string().trim().min(1).max(2000).describe("The whole line as it should read, without quotation marks around it"),
     }), true, (context, { line, words }) => directed(context, { type: "retcon", sequence: line, replacement: unquoted(words) }, (sequence) => `Reworded #${line} (#${sequence}).`)),
   tool("delete_line", "Delete a line of speech, narration, or an introduced event that changed no ways, or a character's note or latest change to a "
     + "goal. Agents who heard it forget it, and so do notes taken only from it; with a note, they are told what really happened instead.", z.strictObject({
     line: z.number().int().min(2).describe("The line's #number"),
-    note: z.string().trim().min(1).max(500).optional().describe("What really happened, told to those who heard it; leave out to delete it quietly, as notes and goals always are"),
+    note: z.string().trim().min(1).max(1000).optional().describe("What really happened, told to those who heard it; leave out to delete it quietly, as notes and goals always are"),
   }), true, (context, { line, note }) => directed(context, { type: "retcon", sequence: line, ...(note ? { text: note } : {}) },
     (sequence) => (note ? `Withdrew #${line}, with a correction (#${sequence}).` : `Deleted #${line} (#${sequence}).`))),
 ];

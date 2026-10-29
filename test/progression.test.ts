@@ -246,7 +246,7 @@ test("director steering is recorded outside the story, seen by nobody, and pendi
     () => session.commit({ role: "director", action: { type: "steer", text: "Hurry.", targetId: "nobody" } }),
     errorCode("INVALID_ACTION"),
   );
-  assert.throws(() => session.commit({ role: "director", action: { type: "steer", text: "x".repeat(501) } }), errorCode("INVALID_INPUT"));
+  assert.throws(() => session.commit({ role: "director", action: { type: "steer", text: "x".repeat(1001) } }), errorCode("INVALID_INPUT"));
   assert.equal(
     describeEvent(targeted[0]!.event, session.state, null),
     "[0:00:00] Director, outside the story, to Bram: Consider the scree slope.",
@@ -284,7 +284,7 @@ test("the director can introduce an in-world event, perceived and remembered whe
   assert.throws(refused({ locationIds: ["sewer"] }), errorCode("INVALID_ACTION"));
   assert.throws(refused({ lockRoutes: [{ fromId: "camp", destinationId: "cistern" }] }), errorCode("INVALID_ACTION"));
   assert.throws(refused({ lockRoutes: [opened], unlockRoutes: [opened] }), errorCode("INVALID_ACTION"));
-  assert.throws(refused({ text: "x".repeat(1001) }), errorCode("INVALID_INPUT"));
+  assert.throws(refused({ text: "x".repeat(2001) }), errorCode("INVALID_INPUT"));
 
   const state = session.state;
   const forged = { type: "introduced" as const, text, lockedRoutes: [{ fromId: "camp", destinationId: "cistern" }], unlockedRoutes: [] };

@@ -53,7 +53,7 @@ export function NewWorld() {
           <span className="card-icon"><Sparkles size={19} /></span>
           <strong>Describe it to the AI</strong>
           <p>Say what you want, and the AI creator builds it while you watch. Each message can be undone.</p>
-          <textarea rows={2} value={idea} maxLength={1000} onChange={(event) => setIdea(event.target.value)}
+          <textarea rows={2} value={idea} maxLength={2000} onChange={(event) => setIdea(event.target.value)}
             placeholder="e.g. Two rival chefs forced to share a kitchen, or a lighthouse keeper who lies" aria-label="Your idea" />
           <div><button type="button" className="primary" disabled={busy} onClick={() => void start({}, true)}><Sparkles size={15} />Open the creator</button></div>
         </div>

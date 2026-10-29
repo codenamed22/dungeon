@@ -145,13 +145,13 @@ export function SetupEditor({ worldId, view, onSaved }: { worldId: string; view:
       <h3>The world</h3>
       <label className="field">
         Premise
-        <textarea rows={4} maxLength={1000} value={draft.premise} placeholder="Setting, genre, tone, and what is at stake, in two to four sentences."
+        <textarea rows={4} maxLength={2000} value={draft.premise} placeholder="Setting, genre, tone, and what is at stake, in two to four sentences."
           onChange={(event) => { const premise = event.target.value; change((current) => ({ ...current, premise })); }} />
         <span className="field-hint">Every AI reads this, the main characters included: keep secrets out of it.</span>
       </label>
       <label className="field">
         How the narrator writes
-        <textarea rows={2} maxLength={1000} value={draft.narratorStyle}
+        <textarea rows={2} maxLength={2000} value={draft.narratorStyle}
           onChange={(event) => { const narratorStyle = event.target.value; change((current) => ({ ...current, narratorStyle })); }} />
       </label>
       <label className="inline">
@@ -177,9 +177,9 @@ export function SetupEditor({ worldId, view, onSaved }: { worldId: string; view:
             </legend>
             {persona && (
               <>
-                <label className="field">Who they are<textarea rows={2} maxLength={500} value={persona.summary} onChange={(event) => set({ ...persona, summary: event.target.value })} /></label>
-                <label className="field">Who they are to the others <span className="muted small">(everyone reads this, so no secrets)</span><input maxLength={300} value={persona.knownAs} placeholder="e.g. the incident commander tonight" onChange={(event) => set({ ...persona, knownAs: event.target.value })} /></label>
-                <label className="field">How they speak<input maxLength={500} value={persona.voice} onChange={(event) => set({ ...persona, voice: event.target.value })} /></label>
+                <label className="field">Who they are<textarea rows={2} maxLength={1000} value={persona.summary} onChange={(event) => set({ ...persona, summary: event.target.value })} /></label>
+                <label className="field">Who they are to the others <span className="muted small">(everyone reads this, so no secrets)</span><input maxLength={600} value={persona.knownAs} placeholder="e.g. the incident commander tonight" onChange={(event) => set({ ...persona, knownAs: event.target.value })} /></label>
+                <label className="field">How they speak<input maxLength={1000} value={persona.voice} onChange={(event) => set({ ...persona, voice: event.target.value })} /></label>
                 <label className="field">What they want <span className="muted small">(one per line, up to 8)</span>
                   <textarea rows={3} value={persona.goals} onChange={(event) => set({ ...persona, goals: event.target.value })} />
                 </label>
@@ -212,9 +212,9 @@ export function SetupEditor({ worldId, view, onSaved }: { worldId: string; view:
             </legend>
             {persona && (
               <>
-                <label className="field">Who they are<textarea rows={2} maxLength={500} value={persona.summary} onChange={(event) => set({ ...persona, summary: event.target.value })} /></label>
-                <label className="field">Who they are to the others <span className="muted small">(everyone reads this, so no secrets)</span><input maxLength={300} value={persona.knownAs} placeholder="e.g. the incident commander tonight" onChange={(event) => set({ ...persona, knownAs: event.target.value })} /></label>
-                <label className="field">How they speak<input maxLength={500} value={persona.voice} onChange={(event) => set({ ...persona, voice: event.target.value })} /></label>
+                <label className="field">Who they are<textarea rows={2} maxLength={1000} value={persona.summary} onChange={(event) => set({ ...persona, summary: event.target.value })} /></label>
+                <label className="field">Who they are to the others <span className="muted small">(everyone reads this, so no secrets)</span><input maxLength={600} value={persona.knownAs} placeholder="e.g. the incident commander tonight" onChange={(event) => set({ ...persona, knownAs: event.target.value })} /></label>
+                <label className="field">How they speak<input maxLength={1000} value={persona.voice} onChange={(event) => set({ ...persona, voice: event.target.value })} /></label>
                 <label className="field">What they know or believe <span className="muted small">(one per line; it may be wrong)</span>
                   <textarea rows={3} value={persona.knowledge} onChange={(event) => set({ ...persona, knowledge: event.target.value })} />
                 </label>

@@ -130,7 +130,7 @@ function AddRow({ placeholder, label, onAdd, disabled, hint, children }: {
   return (
     <>
       <form className="add-row wrap" onSubmit={submit}>
-        <input value={name} onChange={(event) => setName(event.target.value)} placeholder={placeholder} aria-label={label} maxLength={100} disabled={disabled} />
+        <input value={name} onChange={(event) => setName(event.target.value)} placeholder={placeholder} aria-label={label} maxLength={200} disabled={disabled} />
         {children}
         <button type="submit" className="primary" disabled={disabled || !name.trim()}><Plus size={16} />Add</button>
       </form>
@@ -190,12 +190,12 @@ export function StorySection({ editor, draft, onToast }: SectionProps) {
   };
   return (
     <div className="stack" style={{ gap: 18 }}>
-      <LiveText label="Title" value={seed.name} maxLength={100} commit={(name) => apply((current) => setWorld(current, { name }))} />
-      <LiveText label="Premise" multiline rows={4} maxLength={1000} value={cast.premise ?? ""}
+      <LiveText label="Title" value={seed.name} maxLength={200} commit={(name) => apply((current) => setWorld(current, { name }))} />
+      <LiveText label="Premise" multiline rows={4} maxLength={2000} value={cast.premise ?? ""}
         placeholder="e.g. A payments company at 3 a.m. Checkout is down, and two engineers on call have an hour before morning traffic."
         hint={<>Setting, genre, tone, and what is at stake, in two to four sentences. <strong>Every AI reads it, the main characters included</strong>, so keep secrets and solutions out of it.</>}
         commit={(premise) => apply((current) => setWorld(current, { premise }))} />
-      <LiveText label="How the narrator writes" multiline rows={2} maxLength={1000} value={cast.narratorStyle}
+      <LiveText label="How the narrator writes" multiline rows={2} maxLength={2000} value={cast.narratorStyle}
         hint="e.g. Warm and observant, present tense." commit={(narratorStyle) => apply((current) => setWorld(current, { narratorStyle }))} />
       <div className="card-fields" style={{ border: 0, padding: 0 }}>
         <section className="group" aria-labelledby="rules-title">
@@ -313,8 +313,8 @@ export function PlacesSection(props: SectionProps) {
             <CardEditor key={location.id} id={location.id} number={index + 1} title={location.name}
               subtitle={`${ways} way${ways === 1 ? "" : "s"} out${here.length ? ` · ${here.map((character) => character.name).join(", ")} start here` : ""}`}
               open={cards.open === location.id} onToggle={() => cards.toggle(location.id)}>
-              <LiveText label="Name" value={location.name} maxLength={100} commit={(name) => apply((current) => upsertPlace(current, { id: location.id, name }))} />
-              <LiveText label="What anyone there sees" multiline rows={2} maxLength={1000} value={location.description ?? ""}
+              <LiveText label="Name" value={location.name} maxLength={200} commit={(name) => apply((current) => upsertPlace(current, { id: location.id, name }))} />
+              <LiveText label="What anyone there sees" multiline rows={2} maxLength={2000} value={location.description ?? ""}
                 hint="No secrets: hide those in challenges, discoveries, and what supporting characters know."
                 commit={(description) => apply((current) => upsertPlace(current, { id: location.id, description }))} />
               <div className="group">
@@ -441,7 +441,7 @@ function CharacterCard({ editor, draft, onToast, character, number, open, onTogg
     <CardEditor id={id} number={number} kind={npc ? "npc" : undefined} title={character.name} subtitle={subtitle}
       open={open} onToggle={onToggle} flagged={!placeKnown}>
       <div className="form-grid">
-        <LiveText label="Name" value={character.name} maxLength={100} commit={(name) => apply((current) => upsertCharacter(current, { id, name }))} />
+        <LiveText label="Name" value={character.name} maxLength={200} commit={(name) => apply((current) => upsertCharacter(current, { id, name }))} />
         <Field label={away ? "Appears at" : "Starts in"}>
           <select value={character.locationId} onChange={(event) => apply((current) => upsertCharacter(current, { id, placeId: event.target.value }))}>
             {!placeKnown && <option value={character.locationId}>(choose a place)</option>}
@@ -535,11 +535,11 @@ function PersonaEditor({ editor, character, persona }: { editor: DraftEditor; ch
   return (
     <div className="persona">
       <span className="eyebrow">Persona: what the AI {npc ? "voicing" : "playing"} {character.name} is told</span>
-      <LiveText label="Who they are" multiline rows={2} maxLength={500} value={persona.summary}
+      <LiveText label="Who they are" multiline rows={2} maxLength={1000} value={persona.summary}
         commit={(summary) => apply((current) => setPersona(current, { characterId, summary }))} />
-      <LiveText label="Who they are to the others" maxLength={300} value={persona.knownAs ?? ""} placeholder="e.g. the incident commander tonight" hint="Every AI reads this, so the characters know who they are talking to. No secrets."
+      <LiveText label="Who they are to the others" maxLength={600} value={persona.knownAs ?? ""} placeholder="e.g. the incident commander tonight" hint="Every AI reads this, so the characters know who they are talking to. No secrets."
         commit={(knownAs) => apply((current) => setPersona(current, { characterId, knownAs }))} />
-      <LiveText label="How they speak" maxLength={500} value={persona.voice} commit={(voice) => apply((current) => setPersona(current, { characterId, voice }))} />
+      <LiveText label="How they speak" maxLength={1000} value={persona.voice} commit={(voice) => apply((current) => setPersona(current, { characterId, voice }))} />
       {"goals" in persona ? (
         <>
           <LiveText label="What they want" multiline rows={3} value={persona.goals.join("\n")} hint="One per line, up to 8."
@@ -608,8 +608,8 @@ export function ItemsSection(props: SectionProps) {
           return (
             <CardEditor key={item.id} id={item.id} number={index + 1} kind="item" title={item.name} subtitle={uses.filter(Boolean).join(" · ")}
               open={cards.open === item.id} onToggle={() => cards.toggle(item.id)}>
-              <LiveText label="Name" value={item.name} maxLength={100} commit={(name) => apply((current) => upsertItem(current, { id: item.id, name }))} />
-              <LiveText label="What it looks like" multiline rows={2} maxLength={1000} value={item.description ?? ""}
+              <LiveText label="Name" value={item.name} maxLength={200} commit={(name) => apply((current) => upsertItem(current, { id: item.id, name }))} />
+              <LiveText label="What it looks like" multiline rows={2} maxLength={2000} value={item.description ?? ""}
                 commit={(description) => apply((current) => upsertItem(current, { id: item.id, description }))} />
               <div className="card-actions">
                 <span className="muted small">ID {item.id} · hand it out in Characters</span>
@@ -687,7 +687,7 @@ function ChallengeCard({ editor, draft, challenge, number, open, onToggle, onRem
   return (
     <CardEditor id={id} number={number} title={challenge.name} subtitle={subtitle} open={open} onToggle={onToggle} flagged={!placeKnown}>
       <div className="form-grid">
-        <LiveText label="Name" value={challenge.name} maxLength={100} commit={(name) => apply((current) => upsertChallenge(current, { id, name }))} />
+        <LiveText label="Name" value={challenge.name} maxLength={200} commit={(name) => apply((current) => upsertChallenge(current, { id, name }))} />
         <Field label="Where">
           <select value={challenge.locationId} onChange={(event) => apply((current) => upsertChallenge(current, { id, placeId: event.target.value }))}>
             {!placeKnown && <option value={challenge.locationId}>(choose a place)</option>}
@@ -695,10 +695,10 @@ function ChallengeCard({ editor, draft, challenge, number, open, onToggle, onRem
           </select>
         </Field>
       </div>
-      <LiveText label="What it looks like to those present" multiline rows={2} maxLength={1000} value={challenge.description ?? ""}
+      <LiveText label="What it looks like to those present" multiline rows={2} maxLength={2000} value={challenge.description ?? ""}
         commit={(description) => apply((current) => upsertChallenge(current, { id, description }))} />
       {rules.outcomes === "judgment" && (
-        <LiveText label="What it takes" multiline rows={3} maxLength={1000} value={challenge.criteria ?? ""}
+        <LiveText label="What it takes" multiline rows={3} maxLength={2000} value={challenge.criteria ?? ""}
           placeholder="e.g. Succeeds only if they ask kindly, mention what they noticed, and do not pry."
           hint={<><strong>Hidden: only the referee reads it.</strong> Say in checkable terms what the character must have found out, carry, or say, and what makes it fail.</>}
           commit={(criteria) => apply((current) => upsertChallenge(current, { id, criteria }))} />
@@ -736,7 +736,7 @@ function ChallengeCard({ editor, draft, challenge, number, open, onToggle, onRem
           <ChipChoice options={seed.items.map((item) => ({ value: item.id, label: item.name }))} chosen={(success.grantItems ?? []).map((grant) => grant.itemId)}
             empty="No items to give." onChange={(next) => apply((current) => upsertChallenge(current, { id, grantsItemIds: next }))} />
         </Field>
-        <LiveText label="It reveals, only to whoever succeeds" multiline rows={2} maxLength={1000} value={success.reveals ?? ""}
+        <LiveText label="It reveals, only to whoever succeeds" multiline rows={2} maxLength={2000} value={success.reveals ?? ""}
           hint="A private discovery: the others learn it only if told." commit={(reveals) => apply((current) => upsertChallenge(current, { id, reveals }))} />
         <Field label="It sets off">
           <ChipChoice options={waiting.map((threat) => ({ value: threat.id, label: threat.name }))} chosen={success.armThreats ?? []}
@@ -827,8 +827,8 @@ function ThreatCard({ editor, draft, threat, number, open, onToggle, onRemove }:
   }));
   return (
     <CardEditor id={id} number={number} kind="threat" title={threat.name} subtitle={subtitle} open={open} onToggle={onToggle}>
-      <LiveText label="Name, for you" value={threat.name} maxLength={100} commit={(name) => apply((current) => upsertThreat(current, { id, name }))} />
-      <LiveText label="What those it strikes notice" multiline rows={2} maxLength={500} value={threat.text}
+      <LiveText label="Name, for you" value={threat.name} maxLength={200} commit={(name) => apply((current) => upsertThreat(current, { id, name }))} />
+      <LiveText label="What those it strikes notice" multiline rows={2} maxLength={1000} value={threat.text}
         commit={(text) => apply((current) => upsertThreat(current, { id, text }))} />
       <Field label="When it happens">
         <div className="row wrap">
@@ -950,8 +950,8 @@ function EndingCard({ editor, draft, ending, number, open, onToggle, onRemove }:
   return (
     <CardEditor id={id} number={number} kind="ending" title={ending.name} subtitle={`Ends the story ${triggerPhrase(seed, ending.when)}`}
       open={open} onToggle={onToggle} flagged={!known}>
-      <LiveText label="Name, for you" value={ending.name} maxLength={100} commit={(name) => apply((draftNow) => upsertEnding(draftNow, { id, name }))} />
-      <LiveText label="What everyone reads at the end" multiline rows={3} maxLength={1000} value={ending.text}
+      <LiveText label="Name, for you" value={ending.name} maxLength={200} commit={(name) => apply((draftNow) => upsertEnding(draftNow, { id, name }))} />
+      <LiveText label="What everyone reads at the end" multiline rows={3} maxLength={2000} value={ending.text}
         hint="One to three sentences that close the story. The narrator may add a line after it."
         commit={(text) => apply((draftNow) => upsertEnding(draftNow, { id, text }))} />
       <Field label="The story ends this way when">

@@ -7,11 +7,11 @@ import type { WorldRules } from "../model.ts";
 /** Bump when prompt wording changes, so traces show which prompts produced a run. */
 export const PROMPT_VERSION = "7.0";
 
-export const MAX_PREMISE_LENGTH = 1000;
-export const MAX_NARRATOR_STYLE_LENGTH = 1000;
+export const MAX_PREMISE_LENGTH = 2000;
+export const MAX_NARRATOR_STYLE_LENGTH = 2000;
 
-const personaText = z.string().trim().min(1).max(500);
-const personaLine = z.string().trim().min(1).max(300);
+const personaText = z.string().trim().min(1).max(1000);
+const personaLine = z.string().trim().min(1).max(600);
 /** Who someone is to everyone else; every agent reads it, so it holds no secrets. */
 const knownAs = personaLine.optional();
 

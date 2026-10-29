@@ -13,23 +13,23 @@ export const MAX_INTENT_LENGTH = 200;
 export const MAX_REASON_LENGTH = 300;
 export const MAX_NOTE_LENGTH = 200;
 export const MAX_GOAL_LENGTH = 200;
-export const MAX_DISCOVERY_LENGTH = 500;
+export const MAX_DISCOVERY_LENGTH = 1000;
 /** Events one belief may cite as its evidence. */
 export const MAX_EVIDENCE = 5;
 /** Goals and commitments one character may hold, open or settled. */
 export const MAX_GOALS = 100;
-export const MAX_THREAT_LENGTH = 500;
-export const MAX_STEERING_LENGTH = 500;
-export const MAX_INTRODUCED_LENGTH = 1000;
-export const MAX_RETCON_LENGTH = 500;
-export const MAX_CRITERIA_LENGTH = 1000;
-export const MAX_ENDING_LENGTH = 1000;
+export const MAX_THREAT_LENGTH = 1000;
+export const MAX_STEERING_LENGTH = 1000;
+export const MAX_INTRODUCED_LENGTH = 2000;
+export const MAX_RETCON_LENGTH = 1000;
+export const MAX_CRITERIA_LENGTH = 2000;
+export const MAX_ENDING_LENGTH = 2000;
 
 const id = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/);
 const count = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const positiveCount = count.min(1);
-const label = z.string().trim().min(1).max(100);
-const description = z.string().trim().min(1).max(1000);
+const label = z.string().trim().min(1).max(200);
+const description = z.string().trim().min(1).max(2000);
 const modifier = z.number().int().min(-10).max(20);
 const routeSeconds = positiveCount.max(86_400);
 const taskSeconds = positiveCount.max(MAX_WAIT_SECONDS);

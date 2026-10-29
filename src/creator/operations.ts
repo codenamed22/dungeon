@@ -3,7 +3,7 @@ import { modelSetupSchema } from "../agents/models.ts";
 import { castProblems, castSchema, MAX_NARRATOR_STYLE_LENGTH, MAX_PREMISE_LENGTH, npcPersonaSchema, paceSchema, personaSchema } from "../agents/prompts.ts";
 import type { Cast } from "../agents/prompts.ts";
 import {
-  abilitySchema, BAND_DIFFICULTY, difficultyBandSchema, EngineError, MAX_ENDING_LENGTH, parseInput, rulesOf, worldProblems,
+  abilitySchema, BAND_DIFFICULTY, difficultyBandSchema, EngineError, MAX_ENDING_LENGTH, MAX_THREAT_LENGTH, parseInput, rulesOf, worldProblems,
   worldSeedSchema,
 } from "../model.ts";
 import type { DifficultyBand, WorldRules, WorldSeed } from "../model.ts";
@@ -279,14 +279,14 @@ function edit(draft: Draft, change: (draft: Draft) => string): OperationResult {
 // ---------------------------------------------------------------------------
 // Inputs. Flat objects with every field described: they are also the AI's tool schemas.
 
-const name = z.string().trim().min(1).max(100);
+const name = z.string().trim().min(1).max(200);
 const ref = z.string().trim().min(1).max(64);
-const longText = z.string().trim().max(1000);
+const longText = z.string().trim().max(2000);
 const routeInput = z.strictObject({
   fromId: ref.describe("ID of the place the way leads from"),
   toId: ref.describe("ID of the place it leads to"),
 });
-const lines = (max: number, what: string) => z.array(z.string().trim().min(1).max(300)).max(max).describe(what);
+const lines = (max: number, what: string) => z.array(z.string().trim().min(1).max(600)).max(max).describe(what);
 
 const ruleName = z.string().trim().min(1).max(30);
 
@@ -372,9 +372,9 @@ export const upsertCharacterInput = z.strictObject({
 
 export const setPersonaInput = z.strictObject({
   characterId: ref.describe("ID of the main or supporting character"),
-  summary: z.string().trim().min(1).max(500).optional().describe("Who they are, in a sentence or two"),
-  voice: z.string().trim().min(1).max(500).optional().describe("How they speak, with some texture, e.g. \"warm, teasing, trails off when nervous\""),
-  knownAs: z.string().trim().max(300).optional()
+  summary: z.string().trim().min(1).max(1000).optional().describe("Who they are, in a sentence or two"),
+  voice: z.string().trim().min(1).max(1000).optional().describe("How they speak, with some texture, e.g. \"warm, teasing, trails off when nervous\""),
+  knownAs: z.string().trim().max(600).optional()
     .describe("Who they are to everyone else, e.g. \"the incident commander tonight\" or \"Sam's oldest friend\". Every AI reads it, so never a secret. An empty string removes it."),
   goals: lines(8, "Main characters only: what they want, one per line").optional(),
   riskTolerance: z.enum(["cautious", "balanced", "bold"]).optional().describe("Main characters only: their attitude to risk"),
@@ -413,7 +413,7 @@ export const upsertChallengeInput = z.strictObject({
 export const upsertThreatInput = z.strictObject({
   id: ref.optional().describe("ID of an existing threat to change, or the ID to give a new one. Leave it out to make one from the name."),
   name: name.optional().describe("A short name for the director, e.g. \"The sluice opens\"; required for a new threat"),
-  text: z.string().trim().min(1).max(500).optional().describe("What those it strikes notice when it happens; required for a new threat"),
+  text: z.string().trim().min(1).max(MAX_THREAT_LENGTH).optional().describe("What those it strikes notice when it happens; required for a new threat"),
   placeIds: z.array(ref).max(20).optional().describe("IDs of the places it strikes; an empty list means everywhere"),
   damage: z.number().int().min(0).max(100).optional().describe("Damage to each conscious character where it strikes; 0 for none"),
   blocksRoutes: z.array(routeInput).max(10).optional().describe("Ways it blocks when it happens"),

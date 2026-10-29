@@ -103,7 +103,7 @@ export function Characters({ worldId, view, run, onInspect, onChange }: {
                 )}
                 <input
                   value={form.text}
-                  maxLength={1000}
+                  maxLength={2000}
                   onChange={(event) => setStaging({ ...form, text: event.target.value })}
                   placeholder={form.entering ? `How it looks (optional), e.g. ${character.name} joins the call, yawning.` : `How it looks (optional), e.g. ${character.name} steps out to take a call.`}
                 />

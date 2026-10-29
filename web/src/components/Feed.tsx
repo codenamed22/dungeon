@@ -12,7 +12,7 @@ import { NARROW, useMedia } from "../ui/hooks.ts";
 const PRIVATE = new Set(["discovery", "belief_noted", "goal_set"]);
 const HIDDEN = new Set(["threat_armed", "threat_disarmed"]);
 /** The most words each kind of line may have, matching the engine's limits. */
-const LINE_LIMITS: Record<string, number> = { narration: 1000, utterance: 700, introduced: 1000 };
+const LINE_LIMITS: Record<string, number> = { narration: 1000, utterance: 700, introduced: 2000 };
 
 /**
  * Lines the director can delete: words, notes, and goal changes, so an
@@ -348,7 +348,7 @@ function EventActions({ worldId, view, event, words, mode, canEdit, canDelete, w
           <span className="small">Delete #{event.sequence}? Those who heard it forget it. It stays in this log, crossed out.</span>
           <label className="field">
             Tell them what really happened (optional)
-            <input value={note} maxLength={500} onChange={(change) => setNote(change.target.value)} placeholder="e.g. The door is still locked; nobody opened it." />
+            <input value={note} maxLength={1000} onChange={(change) => setNote(change.target.value)} placeholder="e.g. The door is still locked; nobody opened it." />
           </label>
           <div className="row">
             <button type="submit" className="danger" disabled={busy}>Delete line</button>

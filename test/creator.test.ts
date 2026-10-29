@@ -178,7 +178,7 @@ test("the creator refuses edits that would break the world, with reasons a perso
   refusal(() => upsertPlace(draft, {}), /A new place needs a name/);
   refusal(() => upsertPlace(draft, { name: "   " }), /^name can't be empty$/);
   refusal(() => connectPlaces(draft, { fromId: "jetty", toId: "stair", minutes: 0 }), /^minutes must be at least 1$/);
-  refusal(() => setWorld(draft, { premise: "x".repeat(1001) }), /^premise is too long \(at most 1000 characters\)$/);
+  refusal(() => setWorld(draft, { premise: "x".repeat(2001) }), /^premise is too long \(at most 2000 characters\)$/);
   refusal(() => connectPlaces(draft, { fromId: "jetty", toId: "jetty", minutes: 1 }), /cannot lead to itself/);
   refusal(() => upsertCharacter(draft, { name: "Cat" }), /needs a name and a starting place/);
   refusal(() => upsertChallenge(draft, { name: "Climb", placeId: "stair", ability: "strength", minutes: 2 }), /a stat, a difficulty, and the minutes/);

@@ -120,7 +120,7 @@ export function Creator({ draftId }: { draftId: string }) {
       <header className="creator-head">
         <div className="page">
           <span className="eyebrow">{published ? "World draft · became a world" : "World draft"}</span>
-          <LiveText label={<span className="sr-only">Title</span>} value={draft.seed.name} maxLength={100} inputClassName="title-input" className="title-field"
+          <LiveText label={<span className="sr-only">Title</span>} value={draft.seed.name} maxLength={200} inputClassName="title-input" className="title-field"
             disabled={editor.readOnly} commit={(name) => refusal(editor.apply((current) => setWorld(current, { name })))} />
           <div className="meta-line">
             <span><MapPin size={13} />{plural(draft.seed.locations.length, "place")}</span>
