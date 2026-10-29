@@ -7,8 +7,8 @@ import type { Cast, ModelInfo, ModelSetup, NpcPersona, Persona, Setup, WorldView
 const lines = (text: string) => text.split("\n").map((line) => line.trim()).filter(Boolean);
 const joined = (list: readonly string[] | undefined) => (list ?? []).join("\n");
 
-interface PersonaDraft { summary: string; voice: string; goals: string; riskTolerance: Persona["riskTolerance"] }
-interface NpcDraft { summary: string; voice: string; knowledge: string; wants: string; agenda: boolean; everyMinutes: number; aims: string }
+interface PersonaDraft { summary: string; knownAs: string; voice: string; goals: string; riskTolerance: Persona["riskTolerance"] }
+interface NpcDraft { summary: string; knownAs: string; voice: string; knowledge: string; wants: string; agenda: boolean; everyMinutes: number; aims: string }
 type Pace = NonNullable<Cast["pace"]>;
 
 interface Draft {
@@ -29,6 +29,7 @@ function draftOf(view: WorldView): Draft {
       const persona = cast.npcs?.[character.id];
       npcs[character.id] = persona ? {
         summary: persona.summary,
+        knownAs: persona.knownAs ?? "",
         voice: persona.voice,
         knowledge: joined(persona.knowledge),
         wants: joined(persona.wants),
@@ -39,7 +40,7 @@ function draftOf(view: WorldView): Draft {
     } else {
       const persona = cast.characters[character.id];
       characters[character.id] = persona
-        ? { summary: persona.summary, voice: persona.voice, goals: joined(persona.goals), riskTolerance: persona.riskTolerance }
+        ? { summary: persona.summary, knownAs: persona.knownAs ?? "", voice: persona.voice, goals: joined(persona.goals), riskTolerance: persona.riskTolerance }
         : null;
     }
   }
@@ -48,16 +49,22 @@ function draftOf(view: WorldView): Draft {
   };
 }
 
+/** An empty known-as line is none. */
+const knownAsOf = (persona: { knownAs: string }) => (persona.knownAs.trim() ? { knownAs: persona.knownAs.trim() } : {});
+
 function setupOf(draft: Draft): Setup {
   const characters: Record<string, Persona> = {};
   for (const [id, persona] of Object.entries(draft.characters)) {
-    if (persona) characters[id] = { summary: persona.summary, voice: persona.voice, goals: lines(persona.goals), riskTolerance: persona.riskTolerance };
+    if (persona) {
+      characters[id] = { summary: persona.summary, ...knownAsOf(persona), voice: persona.voice, goals: lines(persona.goals), riskTolerance: persona.riskTolerance };
+    }
   }
   const npcs: Record<string, NpcPersona> = {};
   for (const [id, persona] of Object.entries(draft.npcs)) {
     if (!persona) continue;
     npcs[id] = {
       summary: persona.summary,
+      ...knownAsOf(persona),
       voice: persona.voice,
       knowledge: lines(persona.knowledge),
       wants: lines(persona.wants),
@@ -78,10 +85,10 @@ function setupOf(draft: Draft): Setup {
 }
 
 const blankPersona = (name: string): PersonaDraft => ({
-  summary: `${name}, one of the main characters.`, voice: "Plain and brief.", goals: "See this through, together", riskTolerance: "balanced",
+  summary: `${name}, one of the main characters.`, knownAs: "", voice: "Natural and conversational.", goals: "See this through, together", riskTolerance: "balanced",
 });
 const blankNpc = (name: string): NpcDraft => ({
-  summary: `${name}.`, voice: "Plain and brief.", knowledge: "", wants: "", agenda: false, everyMinutes: 10, aims: "",
+  summary: `${name}.`, knownAs: "", voice: "Natural and conversational.", knowledge: "", wants: "", agenda: false, everyMinutes: 10, aims: "",
 });
 
 /**
@@ -171,6 +178,7 @@ export function SetupEditor({ worldId, view, onSaved }: { worldId: string; view:
             {persona && (
               <>
                 <label className="field">Who they are<textarea rows={2} maxLength={500} value={persona.summary} onChange={(event) => set({ ...persona, summary: event.target.value })} /></label>
+                <label className="field">Who they are to the others <span className="muted small">(everyone reads this, so no secrets)</span><input maxLength={300} value={persona.knownAs} placeholder="e.g. the incident commander tonight" onChange={(event) => set({ ...persona, knownAs: event.target.value })} /></label>
                 <label className="field">How they speak<input maxLength={500} value={persona.voice} onChange={(event) => set({ ...persona, voice: event.target.value })} /></label>
                 <label className="field">What they want <span className="muted small">(one per line, up to 8)</span>
                   <textarea rows={3} value={persona.goals} onChange={(event) => set({ ...persona, goals: event.target.value })} />
@@ -205,6 +213,7 @@ export function SetupEditor({ worldId, view, onSaved }: { worldId: string; view:
             {persona && (
               <>
                 <label className="field">Who they are<textarea rows={2} maxLength={500} value={persona.summary} onChange={(event) => set({ ...persona, summary: event.target.value })} /></label>
+                <label className="field">Who they are to the others <span className="muted small">(everyone reads this, so no secrets)</span><input maxLength={300} value={persona.knownAs} placeholder="e.g. the incident commander tonight" onChange={(event) => set({ ...persona, knownAs: event.target.value })} /></label>
                 <label className="field">How they speak<input maxLength={500} value={persona.voice} onChange={(event) => set({ ...persona, voice: event.target.value })} /></label>
                 <label className="field">What they know or believe <span className="muted small">(one per line; it may be wrong)</span>
                   <textarea rows={3} value={persona.knowledge} onChange={(event) => set({ ...persona, knowledge: event.target.value })} />

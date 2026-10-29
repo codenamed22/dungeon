@@ -49,12 +49,22 @@ const NARRATABLE = new Set<EventData["type"]>([
   "check_resolved",
   "time_advanced",
   "ruling",
+  "character_entered",
+  "character_exited",
 ]);
 
 /** Events nobody perceives: hidden consequences, and the director's out-of-fiction steering. */
 const HIDDEN = new Set<EventData["type"]>(["threat_armed", "threat_disarmed", "steering"]);
-/** Zero-time parts of a check's outcome, which commit before any threat its duration made due. */
-const OUTCOME_PARTS = new Set<EventData["type"]>(["discovery", "threat_armed", "threat_disarmed", "story_ended"]);
+/** Someone coming into the scene or leaving it. */
+const STAGING = new Set<EventData["type"]>(["character_entered", "character_exited"]);
+/**
+ * Zero-time parts of an outcome, which commit before any threat its duration
+ * made due. The engine now appends an action's ending after those threats, but
+ * replay still accepts the ending among these parts, as earlier versions recorded it.
+ */
+const OUTCOME_PARTS = new Set<EventData["type"]>([
+  "discovery", "threat_armed", "threat_disarmed", "story_ended", "character_entered", "character_exited",
+]);
 /** What may still happen once the story has ended: words about what already happened. */
 const AFTER_THE_END = new Set<EventData["type"]>(["narration", "retraction"]);
 
@@ -195,10 +205,15 @@ function interruption(state: WorldState, seconds: number): Threat | undefined {
   return next && next.at! < state.elapsedSeconds + seconds ? next : undefined;
 }
 
-/** Conscious characters in the given places, or everywhere. */
+/** Whether a character is in the scene: away characters keep their last place but take no part. */
+export function inScene(character: Character): boolean {
+  return character.away !== true;
+}
+
+/** Conscious characters in the scene, in the given places or everywhere. */
 function presentAt(state: WorldState, locationIds: readonly string[] | undefined): Character[] {
   return state.characters.filter((character) => (
-    character.hp > 0 && (locationIds === undefined || locationIds.includes(character.locationId))
+    character.hp > 0 && inScene(character) && (locationIds === undefined || locationIds.includes(character.locationId))
   ));
 }
 
@@ -253,13 +268,17 @@ function activeActor(state: WorldState, actorId: string, kind: "character" | "np
     invalid(kind === "npc" ? `${actor.id} is not an NPC` : `${actor.id} is an NPC, voiced by the DM`);
   }
   if (actor.hp === 0) invalid(`${actor.id} is incapacitated`);
+  if (!inScene(actor)) invalid(`${actor.id} is away from the scene`);
   return actor;
 }
 
 /** Why the addressee cannot hear the speaker, or null if they can. */
 function addresseeProblem(state: WorldState, speaker: Character, addresseeId: string): string | null {
   const addressee = state.characters.find((character) => character.id === addresseeId);
-  if (!addressee || addressee.id === speaker.id || addressee.locationId !== speaker.locationId || addressee.hp === 0) {
+  if (
+    !addressee || addressee.id === speaker.id || addressee.locationId !== speaker.locationId
+    || addressee.hp === 0 || !inScene(addressee)
+  ) {
     return `${addresseeId} is not here to hear ${speaker.id}`;
   }
   return null;
@@ -311,10 +330,22 @@ const BANDS: readonly string[] = difficultyBandSchema.options;
 function rulingProblem(state: WorldState, actor: Character, data: RulingData): string | null {
   const limits = state.rulings;
   if (!limits) return "This world does not allow open-ended attempts";
+  if (data.bringsIn !== undefined) {
+    const arriving = state.characters.find((character) => character.id === data.bringsIn);
+    if (!arriving || inScene(arriving)) return `${data.bringsIn} is not away from the scene, so nothing can bring them in`;
+  }
+  if (data.sendsOut !== undefined) {
+    const leaving = state.characters.find((character) => character.id === data.sendsOut);
+    if (!leaving || leaving.npc !== true || !inScene(leaving) || leaving.locationId !== actor.locationId) {
+      return `${data.sendsOut} is not a supporting character here; only they can be sent away by an attempt`;
+    }
+  }
   switch (data.decision) {
     case "existing": {
       const challenge = state.challenges.find((entry) => entry.id === data.challengeId);
-      if (data.challenge !== undefined || data.seconds !== undefined) return "A ruling on an existing challenge defines nothing";
+      if (data.challenge !== undefined || data.seconds !== undefined || data.bringsIn !== undefined || data.sendsOut !== undefined) {
+        return "A ruling on an existing challenge defines nothing";
+      }
       if (!challenge || challenge.locationId !== actor.locationId) return `There is no challenge ${data.challengeId} here`;
       return challenge.resolved ? `${challenge.id} is already resolved` : null;
     }
@@ -351,6 +382,10 @@ function rulingProblem(state: WorldState, actor: Character, data: RulingData): s
 /** The ruling event for an attempt. A new check's ID derives from the ruling's sequence. */
 function rulingEvent(state: WorldState, actor: Character, intent: string, ruling: RulingInput, sequence: number): RulingData {
   const base = { type: "ruling" as const, actorId: actor.id, intent, reason: ruling.reason };
+  const staging = ruling.decision === "existing" ? {} : {
+    ...(ruling.bringsIn === undefined ? {} : { bringsIn: ruling.bringsIn }),
+    ...(ruling.sendsOut === undefined ? {} : { sendsOut: ruling.sendsOut }),
+  };
   let data: RulingData;
   switch (ruling.decision) {
     case "existing":
@@ -360,6 +395,7 @@ function rulingEvent(state: WorldState, actor: Character, intent: string, ruling
       const challengeId = `ruled-${sequence}`;
       data = {
         ...base,
+        ...staging,
         decision: "new",
         challengeId,
         challenge: {
@@ -376,7 +412,7 @@ function rulingEvent(state: WorldState, actor: Character, intent: string, ruling
       break;
     }
     case "automatic":
-      data = { ...base, decision: "automatic", seconds: ruling.seconds };
+      data = { ...base, ...staging, decision: "automatic", seconds: ruling.seconds };
       break;
   }
   const problem = rulingProblem(state, actor, data);
@@ -436,7 +472,7 @@ export function resolveAction(
     case "transfer_item": {
       const recipient = state.characters.find((entry) => entry.id === action.recipientId);
       if (!recipient || recipient.id === actor.id) invalid("Choose a different, existing recipient");
-      if (recipient.locationId !== actor.locationId) invalid("Recipient must be in the same location");
+      if (recipient.locationId !== actor.locationId || !inScene(recipient)) invalid("Recipient must be in the same location");
       if (quantity(actor.inventory, action.itemId) < action.quantity) {
         invalid(`Insufficient inventory: ${action.itemId}`);
       }
@@ -518,14 +554,19 @@ export function perceiversOf(
     return presentAt(before, data.locationIds).map((character) => character.id).sort();
   }
   if (data.type === "story_ended") return presentAt(before, undefined).map((character) => character.id).sort();
+  if (data.type === "character_entered" || data.type === "character_exited") {
+    // Seen where it happens, by those there and by the one coming or going.
+    const staged = before.characters.find((character) => character.id === data.characterId);
+    if (!staged) corrupt(`Event stages an unknown character: ${data.characterId}`);
+    const present = presentAt(before, [data.locationId]).map((character) => character.id);
+    return [...new Set([...(staged.hp > 0 ? [staged.id] : []), ...present])].sort();
+  }
   if (!("actorId" in data)) corrupt(`A ${data.type} event cannot be perceived`);
   if (isPrivate(data.type)) return [data.actorId];
   const actor = before.characters.find((character) => character.id === data.actorId);
   if (!actor) corrupt(`Event has an unknown actor: ${data.actorId}`);
   const locations = data.type === "character_moved" ? [data.fromId, data.destinationId] : [actor.locationId];
-  const present = before.characters
-    .filter((character) => character.hp > 0 && locations.includes(character.locationId))
-    .map((character) => character.id);
+  const present = presentAt(before, locations).map((character) => character.id);
   return [...new Set([actor.id, ...present])].sort();
 }
 
@@ -566,6 +607,18 @@ export function resolveCommand(
   const end = (ending: Ending | undefined) => {
     if (ending) append("engine", { type: "story_ended", endingId: ending.id });
   };
+  /** The entrances and exits an outcome causes, skipping anyone already in or out of the scene. */
+  const stage = (enters: readonly { characterId: string; locationId: string }[], exits: readonly string[]) => {
+    for (const { characterId, locationId } of enters) {
+      if (!inScene(current.characters.find((character) => character.id === characterId)!)) {
+        append("engine", { type: "character_entered", characterId, locationId });
+      }
+    }
+    for (const characterId of exits) {
+      const leaving = current.characters.find((character) => character.id === characterId)!;
+      if (inScene(leaving)) append("engine", { type: "character_exited", characterId, locationId: leaving.locationId });
+    }
+  };
   /**
    * Fires every threat the clock has reached, earliest first, until one ends
    * the story. A threat interrupts the turn: whatever the actor meant to do
@@ -579,6 +632,7 @@ export function resolveCommand(
       threat = nextThreat(current)
     ) {
       append("engine", threatEvent(current, threat));
+      stage(threat.enters ?? [], threat.exits ?? []);
       end(endingFor(current, { threatId: threat.id }));
       fired = true;
     }
@@ -586,18 +640,20 @@ export function resolveCommand(
   };
   /**
    * An action, then its outcome: what a successful check revealed to the actor
-   * alone, its consequences, and the ending it reaches.
+   * alone, and its consequences. Returns the ending the outcome reaches, which
+   * the caller appends only after any threat that came due during the action,
+   * since that threat happened first.
    */
-  const act = (data: EventData) => {
+  const act = (data: EventData): Ending | undefined => {
     append("character", data);
-    if (data.type !== "check_resolved") return;
+    if (data.type !== "check_resolved") return undefined;
     const challenge = current.challenges.find((entry) => entry.id === data.challengeId)!;
     const reveals = data.success ? challenge.onSuccess?.reveals : undefined;
     if (reveals !== undefined) {
       append("character", { type: "discovery", actorId: data.actorId, challengeId: data.challengeId, text: reveals });
     }
     for (const consequence of consequences(current, challenge, data.success)) append("engine", consequence);
-    end(endingFor(current, { challengeId: challenge.id, success: data.success }));
+    return endingFor(current, { challengeId: challenge.id, success: data.success });
   };
   if (command.role === "director") {
     const action = command.action;
@@ -610,6 +666,27 @@ export function resolveCommand(
     } else if (action.type === "retcon") {
       // The caller checks the target with retractionProblem and supplies its perceivers.
       append("director", { type: "retraction", targetSequence: action.sequence, text: action.text });
+    } else if (action.type === "enter") {
+      const arriving = current.characters.find((character) => character.id === action.characterId);
+      if (!arriving) invalid(`Unknown character: ${action.characterId}`);
+      if (inScene(arriving)) invalid(`${arriving.id} is already in the scene`);
+      if (!current.locations.some((location) => location.id === action.locationId)) invalid(`Unknown location: ${action.locationId}`);
+      append("director", {
+        type: "character_entered",
+        characterId: arriving.id,
+        locationId: action.locationId,
+        ...(action.text === undefined ? {} : { text: action.text }),
+      });
+    } else if (action.type === "exit") {
+      const leaving = current.characters.find((character) => character.id === action.characterId);
+      if (!leaving) invalid(`Unknown character: ${action.characterId}`);
+      if (!inScene(leaving)) invalid(`${leaving.id} is already away from the scene`);
+      append("director", {
+        type: "character_exited",
+        characterId: leaving.id,
+        locationId: leaving.locationId,
+        ...(action.text === undefined ? {} : { text: action.text }),
+      });
     } else {
       const problem = introductionProblem(current, action.locationIds, action.lockRoutes ?? [], action.unlockRoutes ?? []);
       if (problem) invalid(problem);
@@ -637,6 +714,7 @@ export function resolveCommand(
       append("character", goalEvent(actor, command.goal, current.revision + 1));
     }
     const action = command.action;
+    let ending: Ending | undefined;
     if (action?.type === "attempt") {
       if (!command.ruling) invalid("An attempt needs the DM's ruling");
       // The ruling, and any check it defines, commits before the roll.
@@ -644,17 +722,30 @@ export function resolveCommand(
       if (ruling.challengeId === undefined && command.judgment !== undefined) invalid("An automatic success needs no judgment");
       append("dm", ruling);
       if (ruling.challengeId !== undefined) {
-        act(resolveAction(current, actor.id, { type: "attempt_check", challengeId: ruling.challengeId }, options.roll, command.judgment));
+        ending = act(resolveAction(current, actor.id, { type: "attempt_check", challengeId: ruling.challengeId }, options.roll, command.judgment));
+      }
+      // Whoever the attempt brings in or sends away: always for an automatic one, and for a check only if it succeeded.
+      const worked = current.challenges.find((entry) => entry.id === ruling.challengeId)?.resolved ?? true;
+      if (worked) {
+        stage(
+          ruling.bringsIn === undefined ? [] : [{ characterId: ruling.bringsIn, locationId: actor.locationId }],
+          ruling.sendsOut === undefined ? [] : [ruling.sendsOut],
+        );
       }
     } else if (action !== undefined) {
-      act(resolveAction(current, actor.id, action, options.roll, command.judgment));
+      ending = act(resolveAction(current, actor.id, action, options.roll, command.judgment));
     }
+    // A threat the action's duration made due happened before the action finished, so it fires first, and may end the story itself.
     fireDue();
+    if (current.endedWith === undefined) end(ending);
   } else if (command.role === "npc") {
     const actor = activeActor(current, command.actorId, "npc");
     if (command.speech !== undefined) {
       append("dm", utterance(current, actor, command.speech, command.addresseeId));
       if (fireDue()) return done();
+    }
+    if (command.leave === true) {
+      append("dm", { type: "character_exited", characterId: actor.id, locationId: actor.locationId });
     }
     if (command.destinationId !== undefined) {
       append("dm", resolveMove(current, actor, command.destinationId));
@@ -673,7 +764,7 @@ export function resolveCommand(
 /** A stored event's actor: conscious, and an NPC only where NPCs may act. */
 function storedActor(state: WorldState, actorId: string, npcAllowed = false): Character {
   const actor = state.characters.find((entry) => entry.id === actorId);
-  if (!actor || actor.hp === 0) corrupt("Event has an invalid or incapacitated actor");
+  if (!actor || actor.hp === 0 || !inScene(actor)) corrupt("Event has an invalid, incapacitated, or absent actor");
   if (actor.npc === true && !npcAllowed) corrupt(`NPC ${actor.id} cannot take this action`);
   return actor;
 }
@@ -682,7 +773,22 @@ function storedActor(state: WorldState, actorId: string, npcAllowed = false): Ch
  * The DM narrates, rules, and voices NPCs; the engine fires and arms threats; the
  * director steers; characters do everything else.
  */
-function expectedSource(state: WorldState, data: Exclude<EventData, { type: "world_created" }>): EventSource {
+function expectedSources(state: WorldState, data: Exclude<EventData, { type: "world_created" }>): readonly EventSource[] {
+  switch (data.type) {
+    // The director stages anyone; the engine stages whoever a threat or a ruling names; an NPC may leave on its own turn.
+    case "character_entered":
+      return ["director", "engine"];
+    case "character_exited":
+      return isNpc(state, data.characterId) ? ["director", "engine", "dm"] : ["director", "engine"];
+    default:
+      return [expectedSource(state, data)];
+  }
+}
+
+function expectedSource(
+  state: WorldState,
+  data: Exclude<EventData, { type: "world_created" | "character_entered" | "character_exited" }>,
+): EventSource {
   switch (data.type) {
     case "narration":
     case "ruling":
@@ -761,8 +867,8 @@ export function applyEvent(previous: WorldState | undefined, event: AdventureEve
   if (!previous || previous.id !== event.worldId || event.sequence !== previous.revision + 1) {
     corrupt("Event history is out of sequence");
   }
-  const source = expectedSource(previous, data);
-  if (event.source !== source) corrupt(`This ${data.type} event must come from the ${source}`);
+  const sources = expectedSources(previous, data);
+  if (!sources.includes(event.source)) corrupt(`This ${data.type} event must come from the ${sources.join(" or ")}`);
   if (previous.endedWith !== undefined && !AFTER_THE_END.has(data.type)) corrupt("Nothing happens after the story ends");
   // Once the story has ended, the clock stops: threats still due never fire.
   const due = previous.endedWith === undefined ? nextThreat(previous) : undefined;
@@ -824,7 +930,10 @@ export function applyEvent(previous: WorldState | undefined, event: AdventureEve
       const actor = storedActor(state, data.actorId);
       const recipient = state.characters.find((entry) => entry.id === data.recipientId);
       const owned = quantity(actor.inventory, data.itemId);
-      if (!recipient || recipient.id === actor.id || recipient.locationId !== actor.locationId || owned < data.quantity) {
+      if (
+        !recipient || recipient.id === actor.id || recipient.locationId !== actor.locationId || !inScene(recipient)
+        || owned < data.quantity
+      ) {
         corrupt("Invalid inventory transfer event");
       }
       if (owned === data.quantity) delete actor.inventory[data.itemId];
@@ -905,6 +1014,23 @@ export function applyEvent(previous: WorldState | undefined, event: AdventureEve
         corrupt("An ending on a threat comes only once the threat has happened");
       }
       state.endedWith = ending.id;
+      break;
+    }
+    case "character_entered": {
+      const arriving = state.characters.find((character) => character.id === data.characterId);
+      if (!arriving || inScene(arriving) || !state.locations.some((location) => location.id === data.locationId)) {
+        corrupt("Only someone away from the scene can enter it, at a known place");
+      }
+      delete arriving.away;
+      arriving.locationId = data.locationId;
+      break;
+    }
+    case "character_exited": {
+      const leaving = state.characters.find((character) => character.id === data.characterId);
+      if (!leaving || !inScene(leaving) || leaving.locationId !== data.locationId) {
+        corrupt("Only someone in the scene can leave it, from where they are");
+      }
+      leaving.away = true;
       break;
     }
     case "steering":
@@ -1019,9 +1145,12 @@ export class Replayer {
         corrupt("A consequence must follow the check that caused it");
       }
     }
+    if (STAGING.has(data.type) && event.source !== "director" && !this.staged(event)) {
+      corrupt("An entrance or exit must follow the threat, ruling, or words that caused it");
+    }
     if (data.type === "story_ended") {
       const when = this.state?.endings?.find((entry) => entry.id === data.endingId)?.when;
-      const previous = this.history.get(event.sequence - 1)?.event;
+      const previous = this.causeOf(event);
       const check = this.lastCheck;
       const caused = when !== undefined && ("threatId" in when
         ? previous?.requestId === event.requestId && previous.data.type === "threat_triggered" && previous.data.threatId === when.threatId
@@ -1035,6 +1164,53 @@ export class Replayer {
     this.history.set(event.sequence, { event, perceivers });
     if (data.type === "retraction") this.retracted.add(data.targetSequence);
     return perceivers;
+  }
+
+  /** The event before this one in its request, past any entrances and exits the engine staged in between. */
+  private causeOf(event: AdventureEvent): AdventureEvent | undefined {
+    let sequence = event.sequence - 1;
+    let previous = this.history.get(sequence)?.event;
+    while (previous?.requestId === event.requestId && previous.source === "engine" && STAGING.has(previous.data.type)) {
+      previous = this.history.get(--sequence)?.event;
+    }
+    return previous?.requestId === event.requestId ? previous : undefined;
+  }
+
+  /**
+   * Whether an entrance or exit the engine or DM recorded has its cause: a threat
+   * or ruling that names it, or an NPC's own words just before it leaves.
+   */
+  private staged(event: AdventureEvent): boolean {
+    const data = event.data;
+    if (data.type !== "character_entered" && data.type !== "character_exited") return false;
+    if (event.source === "dm") {
+      const words = this.history.get(event.sequence - 1)?.event;
+      return data.type === "character_exited" && words?.requestId === event.requestId
+        && words.data.type === "utterance" && words.data.actorId === data.characterId;
+    }
+    const cause = this.causeOf(event);
+    if (cause?.data.type === "threat_triggered") {
+      const threatId = cause.data.threatId;
+      const threat = this.state?.threats?.find((entry) => entry.id === threatId);
+      return data.type === "character_entered"
+        ? threat?.enters?.some((entry) => entry.characterId === data.characterId && entry.locationId === data.locationId) === true
+        : threat?.exits?.includes(data.characterId) === true;
+    }
+    // A ruling stages someone straight after an automatic success, or after the successful check it defined.
+    let ruling = cause;
+    if (cause?.data.type === "check_resolved") {
+      const before = this.history.get(cause.sequence - 1)?.event;
+      ruling = cause.data.success && before?.requestId === event.requestId && before.data.type === "ruling"
+        && before.data.decision === "new" && before.data.challengeId === cause.data.challengeId ? before : undefined;
+    } else if (cause?.data.type === "ruling" && cause.data.decision !== "automatic") {
+      ruling = undefined;
+    }
+    if (ruling?.data.type !== "ruling") return false;
+    const rulingData = ruling.data;
+    const actor = this.state?.characters.find((character) => character.id === rulingData.actorId);
+    return data.type === "character_entered"
+      ? rulingData.bringsIn === data.characterId && actor?.locationId === data.locationId
+      : rulingData.sendsOut === data.characterId;
   }
 
   /** A replayed event as a belief may cite it. */

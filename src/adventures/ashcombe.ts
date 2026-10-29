@@ -189,12 +189,14 @@ export const ashcombeCast: Cast = {
   characters: {
     clara: {
       summary: "Clara Finch, a crime novelist who has written eleven murders and solved none. Sharp, bold, and nosy.",
+      knownAs: "a crime novelist, a weekend guest at Ashcombe",
       voice: "Quick, curious, and fond of a theatrical question.",
       goals: ["Find out who killed Sir Edmund", "Catch someone in a lie"],
       riskTolerance: "bold",
     },
     arthur: {
       summary: "Arthur Pell, a retired army doctor. Methodical, kind, and hard to fool about a body.",
+      knownAs: "a retired army doctor, a weekend guest at Ashcombe",
       voice: "Measured and courteous, with the occasional dry aside.",
       goals: ["Establish how and when Sir Edmund died", "Make sure no innocent person is blamed"],
       riskTolerance: "cautious",
@@ -203,6 +205,7 @@ export const ashcombeCast: Cast = {
   npcs: {
     margaret: {
       summary: "Lady Margaret Vane, Sir Edmund's wife: composed, cold, and protective of the family name.",
+      knownAs: "Lady Margaret Vane, Sir Edmund's wife",
       voice: "Clipped and aristocratic; never raises her voice.",
       knowledge: [
         "Say you spent the evening in the drawing room. In truth you argued with Edmund about money in his study at 7:50 and left him alive and furious",
@@ -213,6 +216,7 @@ export const ashcombeCast: Cast = {
     },
     julian: {
       summary: "Julian Vane, Sir Edmund's nephew: tall, fair-haired, charming, and deep in gambling debts. He killed his uncle.",
+      knownAs: "Julian Vane, Sir Edmund's nephew",
       voice: "Easy charm, quick jokes, and a temper when cornered.",
       knowledge: [
         "Say you were reading in the library from seven until dinner. In truth you climbed into the study by the window at eight, struck your uncle, and moved the mantel clock on to 8:40",
@@ -224,6 +228,7 @@ export const ashcombeCast: Cast = {
     },
     hale: {
       summary: "Mrs. Hale, the housekeeper for twenty years: loyal, frightened, and hiding her son.",
+      knownAs: "Mrs. Hale, the housekeeper",
       voice: "Plain, polite, and evasive when pressed.",
       knowledge: [
         "Say you never left the kitchen. In truth you met your son on the terrace at eight; he deserted from the army and is hiding nearby",

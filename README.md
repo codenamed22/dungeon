@@ -195,8 +195,10 @@ What you can do:
   setting, genre, tone, and stakes. The main characters read it too, so keep
   secrets and solutions out of it.
 - **Agents.** Choose which main characters an agent plays, and write each one's
-  persona: who they are, how they speak, what they want, and their attitude to
-  risk. Do the same for supporting characters, whom the game master voices, with
+  persona: who they are, who they are to the others, how they speak, what they
+  want, and their attitude to risk. "Who they are to the others" (such as "the
+  incident commander tonight") goes into every AI's system prompt as a who's-who
+  list, so the characters know who they're talking to; keep secrets out of it. Do the same for supporting characters, whom the game master voices, with
   what they know (which may be wrong), what they want, and an optional agenda
   that makes them speak up unprompted. Edit the premise and the pace, and see
   the narrator's and referee's system prompts. Pick the character and game
@@ -221,6 +223,8 @@ What you can do:
   outside the story, as in the CLI. Introduce an event: something that happens
   in the story, where you say (or everywhere), perceived and remembered by the
   conscious characters there, and optionally blocking or opening a way.
+  Send a character away from the scene, or bring one in at a place you choose,
+  with optional words for how it looks; whoever is there sees it happen.
   Retcon a narration, a line of speech, or an introduced event that changed no
   route: those who perceived it receive a correction, and their agents no
   longer see the original, in their transcript or in search. Branch a world
@@ -250,7 +254,7 @@ The server's HTTP API, under `/api`, is what the interface uses:
 | `GET /api/worlds/:id/memory/:character?search=TEXT` | Their goals, beliefs, discoveries, and search results. |
 | `GET /api/worlds/:id/traces`, `GET /api/worlds/:id/report` | Model calls; session metrics. |
 | `PUT /api/worlds/:id/setup` | Save personas and models. |
-| `POST /api/worlds/:id/mute`, `steer`, `introduce`, `retcon`, `branch` | Director actions. |
+| `POST /api/worlds/:id/mute`, `steer`, `introduce`, `enter`, `exit`, `retcon`, `branch` | Director actions. `enter` takes `{characterId, locationId, text?}`, `exit` takes `{characterId, text?}`. |
 | `POST /api/worlds/:id/step`, `run`, `rehearse`, `pause` | Start or pause a run in the background; its progress arrives on the stream. |
 | `GET /api/adventures`, `GET /api/models?q=TEXT` | Built-in adventures; OpenRouter models, with whether each can call tools. |
 | `GET /api/drafts`, `POST /api/drafts` | List drafts; create one, blank or from `{adventureId}`. |
@@ -276,6 +280,8 @@ npm run director -- <command> [--world ID] [--schema NAME] [--model ID]
 | `mute [CHARACTER...]` | Stop the scheduler choosing them, until unmuted. With no names, list who is muted. |
 | `unmute CHARACTER...` | Let the scheduler choose them again; `unmute --all` for everyone. |
 | `steer TEXT [--to CHARACTER]` | Ask everyone, or one character, to reconsider, outside the story. Each sees it in its next prompt only; it changes nothing in the world. |
+| `enter CHARACTER --at PLACE [--text TEXT]` | Bring someone away from the scene into it, at a place; `--text` says how it looks. |
+| `exit CHARACTER [--text TEXT]` | Send someone in the scene away from it. |
 | `run --turns N` | Run up to N turns. `--max-calls N`, `--max-tokens N`, and `--max-cost CREDITS` cap spending. |
 | `show` | Admin view of the world: ruling limits, places, exits, characters and NPCs, challenges with numbers and the threats they arm or disarm, and every threat's status and timing. |
 | `transcript [--last N]` | Admin transcript, including dice rolls. |
@@ -376,19 +382,20 @@ cannot commit anything the engine would reject.
 1. If the last character turn's actions have no narration yet, the DM narrates
    them first.
 2. The next actor is whoever the last turn's speech addressed, if they can
-   answer, unless another character has already waited a full round. Otherwise
+   answer and the speaker is still there to hear them, unless another
+   character has already waited a full round. Otherwise
    an NPC whose agenda is due speaks up, and failing that the character who has
    waited longest acts, ties going to world order, which is round-robin when
-   nobody is addressed. Incapacitated characters and those
-   without a persona in the cast are skipped. The order comes from the event
+   nobody is addressed. Incapacitated characters, those away from the scene,
+   and those without a persona in the cast are skipped. The order comes from the event
    log, so it survives restarts.
 3. The character's agent receives only its own perception (place, exits,
    people present and their visible condition, challenges with difficulty
    *bands*), its inventory, its memory (below), the 30 most recent events it
    perceived, numbered so it can cite them, and its legal actions with entity
    IDs.
-4. It replies with optional speech, optionally addressed to one person present
-   (`to`), an optional action, and optionally a belief to note and a goal to
+4. It replies with optional speech (as long as the moment needs, up to about
+   80 words), optionally addressed to one person present (`to`), an optional action, and optionally a belief to note and a goal to
    adopt or settle. These commit atomically under one request ID: speech, then
    the note and goal, then the action.
 5. An invalid reply, or an action the engine rejects, goes back to the agent
@@ -398,13 +405,32 @@ cannot commit anything the engine would reject.
    next time.
 6. The DM narrates committed actions. Narration reaches exactly the characters
    who perceived those actions, and the narrator sees earlier events only if
-   every one of those characters perceived them too.
+   every one of those characters perceived them too. It covers only what the
+   acting character perceived, so an arrival that a threat causes elsewhere
+   during the turn is left to the threat's own text. A run that reaches an
+   ending retries the ending's narration if the narrator fails, before it
+   stops.
 
 **NPCs** (characters with `npc: true`, such as Old Tamsin in the starter
 adventure) are voiced by the DM model from a persona in the cast. An NPC acts
 when the last turn's speech addressed it, or when its agenda comes due (below):
-it must speak, and it may walk along an open exit. NPC turns are never narrated,
-and an NPC without a persona never speaks.
+it must speak, and it may walk along an open exit or, instead, leave the scene
+(`leave`) when it really would go, coming back only if something brings it.
+NPC turns are never narrated, and an NPC without a persona never speaks. An NPC
+is told about attempts that failed in front of it since it last spoke, so it
+does not hand over in its own words what someone just failed to get from it.
+
+**Entrances and exits.** Anyone, main characters included, can be away from
+the scene: they keep their last place but take no turns, cannot be addressed,
+handed anything, or hurt, and perceive nothing. A world may start someone
+away. A threat can bring characters in, each at a place, and send characters
+away when it fires. A referee's ruling on an open-ended attempt brings in
+someone away (`bringsIn`, arriving where the actor is) or sends off a
+supporting character there (`sendsOut`) if the attempt works: always for an
+automatic ruling, and for a new check only on success. The director can do
+either at any time. An entrance is seen by those at the place and the one
+arriving; an exit by those at the place and the one leaving. Characters
+remember where each went.
 
 **Open-ended attempts.** In a world with ruling limits, a character may
 `attempt` something no listed action covers, described in a short phrase. The
@@ -413,7 +439,10 @@ check (an allowed ability, a difficulty band, failure damage, and minutes, all
 within the world's limits), automatic (it simply takes time), or impossible
 (the character is told why and tries again). The engine validates the ruling
 and commits it, with any new check's definition, before it rolls. A new check
-only succeeds or fails: it cannot unlock routes or grant items.
+only succeeds or fails: it cannot unlock routes or grant items. The referee
+also sees the challenges in other places, by name and description only, so
+that it can point the way: an attempt that belongs elsewhere is ruled
+impossible here, with a reason that names the place.
 
 **Memory.** Everything a character remembers derives from events delivered to
 it, so its memory can hold only what it was permitted to perceive.
@@ -516,11 +545,14 @@ A character command carries `speech`, `action`, or both, plus an optional
 `addresseeId` for the speech, and optionally a `note` (a belief citing evidence)
 and a `goal` (adopt one, or settle one by ID). An `attempt` action carries the
 DM's `ruling`. An
-NPC command (`role: "npc"`) carries `speech`, `destinationId`, or both. A DM
+NPC command (`role: "npc"`) carries `speech`, `destinationId`, or both, or
+`speech` with `leave: true`. A DM
 command narrates committed actions: `{ role: "dm", requestId, expectedRevision,
 action: { type: "narrate", aboutSequences: [12], text } }`. A director command
 steers: `{ role: "director", requestId, expectedRevision, action: { type:
-"steer", text, targetId } }`, with `targetId` optional.
+"steer", text, targetId } }`, with `targetId` optional. Other director actions
+are `introduce`, `retcon`, `enter` (`characterId`, `locationId`, optional
+`text`), and `exit` (`characterId`, optional `text`).
 
 Provide a unique request ID for each new command. Retry an uncertain request with
 **exactly the same input**, including its original expected revision. A retry
@@ -549,7 +581,7 @@ For what a character can currently perceive and do, use `perceive` and
 | Action | Rules |
 |---|---|
 | `move` | Follow an outgoing, unlocked route; its definition determines elapsed time. A threat due on the way halts the journey where it set out. |
-| `transfer_item` | Positive integer quantity, owned items, a different recipient in the same location. Takes no time. |
+| `transfer_item` | Positive integer quantity, owned items, a different recipient in the same location and in the scene. Takes no time. |
 | `attempt_check` | An unresolved challenge in the actor's location, carrying any required item, with an optional `approach`. With dice, the engine rolls d20 and uses the world's difficulty, ability modifier, time, and failure damage. With judgment, the command carries the referee's `judgment` (`success` and a `reason`), and the engine applies the world's time and declared effects. |
 | `attempt` | Free-text intent, resolved by the DM's ruling within the world's `rulings` limits. Only available when the world defines them. |
 | `wait` | Advance in-world time by 1 to 3600 seconds, stopping early at a threat. |
@@ -570,14 +602,23 @@ nothing deals damage and everyone stays at full health). A world without
 judgment world, an attempt at a listed challenge or a ruled open attempt must
 carry the referee's judgment, and a dice world refuses one. The referee reads a
 challenge's `criteria`, which never appear in a character's or the narrator's
-prompt. Replay checks the dice arithmetic in dice worlds, and a reason without
+prompt. It also hears what the character says in the same turn as the
+attempt, and weighs those words with the approach. Replay checks the dice arithmetic in dice worlds, and a reason without
 dice in judgment worlds.
 
 A world's optional `endings` each wait on a challenge's success or failure, or
 on a threat. When one is met, the engine appends `story_ended` after the
-outcome, perceived by everyone conscious. From then on only narration and
-retcons commit, and threats still due never fire; replay accepts an ending only
-directly after its cause.
+outcome, perceived by everyone conscious. A threat that came due while the
+action took its time fires before that ending, since it happened first, and
+its own ending wins if it has one. From then on only narration and retcons
+commit, and threats still due never fire; replay accepts an ending only
+directly after its cause (past any entrances and exits the same threat caused).
+
+A character with `away: true` is away from the scene. `character_entered` and
+`character_exited` events change that, at no cost in time. Their source says
+who caused them, and replay checks the cause: the director's need none; the
+engine's must follow the threat or ruling that names them (for a ruled check,
+its success); the DM's are an NPC leaving, straight after its own words.
 
 Perceivers are recorded when an event commits: conscious characters at the
 event's location, plus the actor. A move is perceived at both ends.
@@ -629,7 +670,8 @@ replay), the OpenRouter adapter against a simulated API, prompt canaries (the
 premise reaches every system prompt; a hidden fact never reaches the main
 characters; a challenge's criteria reach only the referee; non-fantasy worlds
 show no HP, party, or adventure), judged checks and their replay, worlds without
-stats or health, endings and what may follow them, every bundled story's
+stats or health, endings and what may follow them (a threat due during the
+action comes first), every bundled story's
 validity,
 and the world creator: its operations, cascading removal, refusals, draft
 problems, that its code reaches nothing from Node (the browser runs it), its
@@ -660,8 +702,11 @@ Integration coverage includes:
   turns; direct address and its fairness cap; NPC replies and moves; rulings
   that commit before the roll; pausing mid-generation; the scheduler lease;
   cost limits; and in judgment worlds, attempts sent to the referee with their
-  approach, open attempts ruled and judged in one call, conversation pace that
-  never forces an action, and a run that stops when the story ends.
+  approach and the words said with it, open attempts ruled and judged in one
+  call, a supporting character told of an attempt that just failed to get
+  something from it, conversation pace that never forces an action, a run
+  that stops when the story ends (retrying the ending's narration if the
+  narrator fails), and narration that leaves out an arrival elsewhere.
 - **Memory:** a non-witness cannot retrieve a private discovery, by search or
   in a snippet; camp talk never reaches the cistern; notes may cite only events
   their writer perceived; recall brings back an early discovery after the
@@ -672,6 +717,12 @@ Integration coverage includes:
   nudged, then must act, and a run that still stalls stops; an NPC with an
   agenda speaks up once time has passed; and a threat that strikes mid-run
   reaches only those it hits, is never narrated, and replays exactly.
+- **Entrances and exits:** the director, a threat, a working ruling, and an NPC
+  leaving on its turn each stage someone, seen only where it happens; someone
+  away cannot act, be addressed, receive items, or be hurt, and the scheduler
+  and cues pass them over; replay refuses an entrance or exit without its
+  cause; the referee sees who is away and the challenges elsewhere, never their
+  criteria; and the creator's away toggle, threat entrances, and their checks.
 - **Web director:** it refuses foreign host names and cross-site or non-JSON
   writes; creates worlds from adventures and seeds; validates and saves setups;
   streams committed events and resumes after the last one received; introduced

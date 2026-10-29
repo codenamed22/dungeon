@@ -468,6 +468,8 @@ dialog .event-actions { margin-top: 0; padding-top: 0; border-top: 0; }
 /* Side panels */
 .sheet { border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; background: var(--paper); }
 .sheet.down { opacity: .6; }
+.sheet.away { border-style: dashed; background: transparent; }
+.stage-form { border-top: 1px solid var(--line); padding-top: 8px; gap: 6px; }
 details.sheet { display: block; }
 details.sheet summary { cursor: pointer; }
 .model-field { display: grid; gap: 6px; }

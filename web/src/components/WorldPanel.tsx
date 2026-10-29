@@ -7,7 +7,8 @@ import type { WorldView } from "../types.ts";
 export function WorldPanel({ view }: { view: WorldView }) {
   const state = view.world;
   const rules = rulesOf(state);
-  const here = (locationId: string) => state.characters.filter((character) => character.locationId === locationId);
+  const here = (locationId: string) => state.characters.filter((character) => character.locationId === locationId && !character.away);
+  const away = state.characters.filter((character) => character.away);
   const endings = state.endings ?? [];
   const pace = view.setup.cast.pace === "conversation" ? "conversation pace" : "action pace";
   return (
@@ -35,6 +36,15 @@ export function WorldPanel({ view }: { view: WorldView }) {
           </ul>
         </div>
       ))}
+      {away.length > 0 && (
+        <div className="sheet away small">
+          <div className="row">
+            <strong>Away from the scene</strong>
+            <span className="muted grow right">{away.map((character) => character.name).join(", ")}</span>
+          </div>
+          <div className="muted">Nobody sees or hears them until the story or the director brings them in.</div>
+        </div>
+      )}
       <h3>Challenges</h3>
       {state.challenges.length === 0 && <p className="muted small">None.</p>}
       {state.challenges.map((challenge) => (
@@ -72,6 +82,8 @@ export function WorldPanel({ view }: { view: WorldView }) {
           <div className="muted">
             {threat.locationIds ? threat.locationIds.map((id) => nameOf(state, id)).join(", ") : "everywhere"}
             {threat.damage !== undefined && `, ${threat.damage} damage`}
+            {(threat.enters ?? []).map((entry) => `, brings in ${nameOf(state, entry.characterId)} at ${nameOf(state, entry.locationId)}`).join("")}
+            {(threat.exits ?? []).map((characterId) => `, sends away ${nameOf(state, characterId)}`).join("")}
           </div>
         </div>
       ))}

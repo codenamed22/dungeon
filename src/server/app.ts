@@ -146,6 +146,8 @@ const bodies = {
     unlockRoutes: z.array(routeRef).optional(),
   }),
   retcon: z.object({ sequence: z.number(), text: z.string() }),
+  enter: z.object({ characterId: z.string(), locationId: z.string(), text: z.string().optional() }),
+  exit: z.object({ characterId: z.string(), text: z.string().optional() }),
   step: z.object({ actorId: z.string().optional() }),
   createDraft: z.object({ adventureId: z.string().optional(), name: z.string().max(100).optional() }),
   saveDraft: z.object({ draft: z.unknown(), expectedRevision: z.number().int().positive() }),
@@ -557,6 +559,25 @@ export function createApp(options: AppOptions): (request: IncomingMessage, respo
           ...(body.locationIds?.length ? { locationIds: body.locationIds } : {}),
           ...(body.lockRoutes?.length ? { lockRoutes: body.lockRoutes } : {}),
           ...(body.unlockRoutes?.length ? { unlockRoutes: body.unlockRoutes } : {}),
+        });
+        return json({ sequence: result.events[0]!.sequence }, 201);
+      }
+      case "POST worlds/:world/enter": {
+        const body = parseBody(bodies.enter, await readJson(request));
+        const result = await direct(engine, worldId!, {
+          type: "enter",
+          characterId: body.characterId,
+          locationId: body.locationId,
+          ...(body.text?.trim() ? { text: body.text.trim() } : {}),
+        });
+        return json({ sequence: result.events[0]!.sequence }, 201);
+      }
+      case "POST worlds/:world/exit": {
+        const body = parseBody(bodies.exit, await readJson(request));
+        const result = await direct(engine, worldId!, {
+          type: "exit",
+          characterId: body.characterId,
+          ...(body.text?.trim() ? { text: body.text.trim() } : {}),
         });
         return json({ sequence: result.events[0]!.sequence }, 201);
       }

@@ -77,6 +77,9 @@ export function draftProblems(draft: Draft): DraftProblem[] {
   const places = new Set(seed.locations.map((location) => location.id));
   if (seed.locations.length === 0) add("error", "places", "Add at least one place.");
   if (!seed.characters.some((character) => !character.npc)) add("error", "characters", "Add at least one main character.");
+  else if (!seed.characters.some((character) => !character.npc && !character.away)) {
+    add("error", "characters", "At least one main character must start in the scene, or nobody can take the first turn.");
+  }
   // Removing a place can strand what was in it; say so plainly before the engine's own checks.
   const reported = new Set<string>();
   for (const character of seed.characters) {
@@ -105,6 +108,12 @@ export function draftProblems(draft: Draft): DraftProblem[] {
     }
     if (character.npc && !cast.npcs?.[character.id]) {
       add("warning", "characters", `${character.name} never speaks without a persona.`, character.id);
+    }
+  }
+  const broughtIn = new Set((seed.threats ?? []).flatMap((threat) => (threat.enters ?? []).map((entry) => entry.characterId)));
+  for (const character of seed.characters) {
+    if (character.away && !broughtIn.has(character.id)) {
+      add("warning", "characters", `${character.name} starts away and no threat brings them in, so only the referee or the director can.`, character.id);
     }
   }
   if (seed.locations.length > 0 && seed.challenges.length === 0) {
@@ -191,6 +200,10 @@ function place(seed: DraftSeed, id: string, what = "place") {
 
 function requireItem(seed: DraftSeed, id: string): void {
   if (!seed.items.some((item) => item.id === id)) fail(`There is no item with ID "${id}".`);
+}
+
+function requireCharacter(seed: DraftSeed, id: string) {
+  return seed.characters.find((character) => character.id === id) ?? fail(`There is no character with ID "${id}".`);
 }
 
 function requireThreat(seed: DraftSeed, id: string) {
@@ -308,6 +321,10 @@ export const upsertCharacterInput = z.strictObject({
     "True for a supporting character the main characters meet, voiced by the game master; false for a main character (default)",
   ),
   placeId: ref.optional().describe("ID of the place they start in; required for a new character"),
+  startsAway: z.boolean().optional().describe(
+    "True if they start away from the scene, taking no part until a threat, the referee, or the director brings them in; "
+    + "placeId is then where they would appear. False to start in the scene (default)",
+  ),
   maxHp: z.number().int().min(1).max(100).optional().describe("In a world with health, the most they have; about 8 for the frail, 10 average, 14 tough"),
   hp: z.number().int().min(0).max(100).optional().describe("In a world with health, what they start with; defaults to maxHp"),
   strength: modifierInput("first"),
@@ -319,7 +336,9 @@ export const upsertCharacterInput = z.strictObject({
 export const setPersonaInput = z.strictObject({
   characterId: ref.describe("ID of the main or supporting character"),
   summary: z.string().trim().min(1).max(500).optional().describe("Who they are, in a sentence or two"),
-  voice: z.string().trim().min(1).max(500).optional().describe("How they speak"),
+  voice: z.string().trim().min(1).max(500).optional().describe("How they speak, with some texture, e.g. \"warm, teasing, trails off when nervous\""),
+  knownAs: z.string().trim().max(300).optional()
+    .describe("Who they are to everyone else, e.g. \"the incident commander tonight\" or \"Sam's oldest friend\". Every AI reads it, so never a secret. An empty string removes it."),
   goals: lines(8, "Main characters only: what they want, one per line").optional(),
   riskTolerance: z.enum(["cautious", "balanced", "bold"]).optional().describe("Main characters only: their attitude to risk"),
   knowledge: lines(20, "NPCs only: what they know or believe, one per line. It may be wrong; that is how rumors work.").optional(),
@@ -361,6 +380,10 @@ export const upsertThreatInput = z.strictObject({
   damage: z.number().int().min(0).max(100).optional().describe("Damage to each conscious character where it strikes; 0 for none"),
   blocksRoutes: z.array(routeInput).max(10).optional().describe("Ways it blocks when it happens"),
   opensRoutes: z.array(routeInput).max(10).optional().describe("Blocked ways it opens when it happens"),
+  bringsIn: z.array(z.strictObject({ characterId: ref, placeId: ref })).max(10).optional()
+    .describe("Characters away from the scene whom it brings in, each at a place, replacing the list; [] for none"),
+  sendsAway: z.array(ref).max(10).optional()
+    .describe("IDs of characters it sends out of the scene, replacing the list; [] for none"),
   startsAtMinute: z.number().int().min(1).max(1440).optional().describe(
     "Make it happen on its own at this minute of the story's clock. Give this or afterMinutes.",
   ),
@@ -551,6 +574,7 @@ export function upsertCharacter(draft: Draft, raw: z.infer<typeof upsertCharacte
     if (input.name !== undefined) character.name = input.name;
     if (input.placeId !== undefined) character.locationId = input.placeId;
     if (input.npc !== undefined) setOptional(character, "npc", input.npc || null);
+    if (input.startsAway !== undefined) setOptional(character, "away", input.startsAway || null);
     if (input.maxHp !== undefined) {
       character.maxHp = input.maxHp;
       if (input.hp === undefined && (created || character.hp > input.maxHp)) character.hp = input.maxHp;
@@ -572,8 +596,14 @@ export function upsertCharacter(draft: Draft, raw: z.infer<typeof upsertCharacte
       if (cast.npcs) delete cast.npcs[character.id];
     }
     const kind = character.npc ? "supporting character" : "main character";
-    return `${created ? "Added" : "Updated"} ${kind} ${character.name} (${character.id}).`;
+    return `${created ? "Added" : "Updated"} ${kind} ${character.name} (${character.id})${character.away ? ", away from the scene at the start" : ""}.`;
   });
+}
+
+/** The known-as line after an edit: unchanged when not given, removed when empty. */
+function knownAsOf(input: string | undefined, existing: string | undefined): { knownAs?: string } {
+  const knownAs = input ?? existing;
+  return knownAs ? { knownAs } : {};
 }
 
 export function setPersona(draft: Draft, raw: z.infer<typeof setPersonaInput>): OperationResult {
@@ -588,7 +618,8 @@ export function setPersona(draft: Draft, raw: z.infer<typeof setPersonaInput>): 
       const voice = input.voice ?? existing?.voice;
       if (!summary || !voice) fail(`A persona for ${character.name} needs a summary and a voice.`);
       const persona: Record<string, unknown> = {
-        summary, voice, knowledge: input.knowledge ?? existing?.knowledge ?? [], wants: input.wants ?? existing?.wants ?? [],
+        summary, voice, ...knownAsOf(input.knownAs, existing?.knownAs),
+        knowledge: input.knowledge ?? existing?.knowledge ?? [], wants: input.wants ?? existing?.wants ?? [],
       };
       const aims = input.agendaAims ?? existing?.agenda?.aims ?? [];
       if (aims.length > 0) persona.agenda = { everyMinutes: input.agendaEveryMinutes ?? existing?.agenda?.everyMinutes ?? 10, aims };
@@ -601,7 +632,7 @@ export function setPersona(draft: Draft, raw: z.infer<typeof setPersonaInput>): 
       const goals = input.goals ?? existing?.goals;
       if (!summary || !voice || !goals?.length) fail(`A persona for ${character.name} needs a summary, a voice, and at least one goal.`);
       cast.characters[character.id] = parseInput(personaSchema, {
-        summary, voice, goals, riskTolerance: input.riskTolerance ?? existing?.riskTolerance ?? "balanced",
+        summary, voice, ...knownAsOf(input.knownAs, existing?.knownAs), goals, riskTolerance: input.riskTolerance ?? existing?.riskTolerance ?? "balanced",
       });
     }
     return `Wrote ${character.name}'s persona.`;
@@ -666,6 +697,11 @@ export function upsertThreat(draft: Draft, raw: z.infer<typeof upsertThreatInput
   const input = checked(upsertThreatInput, raw);
   return edit(draft, ({ seed }) => {
     for (const placeId of input.placeIds ?? []) place(seed, placeId);
+    for (const entry of input.bringsIn ?? []) {
+      requireCharacter(seed, entry.characterId);
+      place(seed, entry.placeId);
+    }
+    for (const characterId of input.sendsAway ?? []) requireCharacter(seed, characterId);
     if (input.startsAtMinute !== undefined && input.afterMinutes !== undefined) {
       fail("A threat either happens at a set minute or waits to be set off: give startsAtMinute or afterMinutes, not both.");
     }
@@ -689,6 +725,10 @@ export function upsertThreat(draft: Draft, raw: z.infer<typeof upsertThreatInput
     if (input.damage !== undefined) setOptional(threat, "damage", input.damage || null);
     if (input.blocksRoutes) setOptional(threat, "lockRoutes", routeRefs(seed, input.blocksRoutes));
     if (input.opensRoutes) setOptional(threat, "unlockRoutes", routeRefs(seed, input.opensRoutes));
+    if (input.bringsIn) {
+      setOptional(threat, "enters", input.bringsIn.map((entry) => ({ characterId: entry.characterId, locationId: entry.placeId })));
+    }
+    if (input.sendsAway) setOptional(threat, "exits", [...new Set(input.sendsAway)]);
     if (input.startsAtMinute !== undefined) {
       threat.status = "armed";
       threat.at = input.startsAtMinute * 60;
@@ -785,7 +825,10 @@ export function remove(draft: Draft, raw: z.infer<typeof removeInput>): Operatio
         seed.locations = seed.locations.filter((location) => location.id !== input.id);
         for (const location of seed.locations) location.routes = location.routes.filter((route) => route.destinationId !== input.id);
         dropRouteReferences(seed, (ref) => ref.fromId === input.id || ref.destinationId === input.id);
-        for (const threat of seed.threats ?? []) setOptional(threat, "locationIds", threat.locationIds?.filter((id) => id !== input.id));
+        for (const threat of seed.threats ?? []) {
+          setOptional(threat, "locationIds", threat.locationIds?.filter((id) => id !== input.id));
+          setOptional(threat, "enters", threat.enters?.filter((entry) => entry.locationId !== input.id));
+        }
         const stranded = [
           ...seed.characters.filter((character) => character.locationId === input.id).map((character) => character.name),
           ...seed.challenges.filter((challenge) => challenge.locationId === input.id).map((challenge) => `"${challenge.name}"`),
@@ -807,6 +850,10 @@ export function remove(draft: Draft, raw: z.infer<typeof removeInput>): Operatio
       case "character":
         if (!seed.characters.some((character) => character.id === input.id)) fail(`There is no character with ID "${input.id}".`);
         seed.characters = seed.characters.filter((character) => character.id !== input.id);
+        for (const threat of seed.threats ?? []) {
+          setOptional(threat, "enters", threat.enters?.filter((entry) => entry.characterId !== input.id));
+          setOptional(threat, "exits", threat.exits?.filter((id) => id !== input.id));
+        }
         delete cast.characters[input.id];
         if (cast.npcs) delete cast.npcs[input.id];
         return `Removed ${label}.`;

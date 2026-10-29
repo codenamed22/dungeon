@@ -1,6 +1,6 @@
 import { EngineError, MAX_WAIT_SECONDS, rulesOf } from "./model.ts";
 import type { Ability, Character, DifficultyBand, WorldRules, WorldState } from "./model.ts";
-import { quantity } from "./rules.ts";
+import { inScene, quantity } from "./rules.ts";
 
 export type { DifficultyBand } from "./model.ts";
 export type Condition = "unhurt" | "wounded" | "badly wounded" | "incapacitated";
@@ -93,7 +93,7 @@ export function perceive(state: WorldState, characterId: string): Perception {
       blocked: route.locked === true,
     })),
     present: state.characters
-      .filter((other) => other.id !== self.id && other.locationId === self.locationId)
+      .filter((other) => other.id !== self.id && other.locationId === self.locationId && inScene(other))
       .map((other) => ({ id: other.id, name: other.name, condition: conditionOf(other.hp, other.maxHp) })),
     challenges: state.challenges
       .filter((challenge) => challenge.locationId === self.locationId)
@@ -115,10 +115,13 @@ export function perceive(state: WorldState, characterId: string): Perception {
   };
 }
 
-/** Targets the engine would currently accept; an incapacitated character has none, and nobody has any once the story ends. */
+/**
+ * Targets the engine would currently accept; an incapacitated or away character
+ * has none, and nobody has any once the story ends.
+ */
 export function availableActions(state: WorldState, characterId: string): AvailableActions {
   const self = character(state, characterId);
-  if (self.hp === 0 || state.endedWith !== undefined) {
+  if (self.hp === 0 || !inScene(self) || state.endedWith !== undefined) {
     return { move: [], transfer: { recipients: [], items: [] }, attempt: [], intent: false, maxWaitMinutes: 0 };
   }
   const location = state.locations.find((entry) => entry.id === self.locationId)!;
@@ -126,7 +129,7 @@ export function availableActions(state: WorldState, characterId: string): Availa
     move: location.routes.filter((route) => !route.locked).map((route) => route.destinationId),
     transfer: {
       recipients: state.characters
-        .filter((other) => other.id !== self.id && other.locationId === self.locationId)
+        .filter((other) => other.id !== self.id && other.locationId === self.locationId && inScene(other))
         .map((other) => other.id),
       items: Object.entries(self.inventory).map(([itemId, count]) => ({ id: itemId, quantity: count })),
     },

@@ -48,14 +48,14 @@ export function placeholderCast(state: WorldState): Cast {
     narratorStyle: "Plain, concrete, present tense.",
     characters: Object.fromEntries(party.map((character) => [character.id, {
       summary: `${character.name}, one of the main characters.`,
-      voice: "Plain and brief.",
+      voice: "Natural and conversational.",
       goals: ["See this through, together"],
       riskTolerance: "balanced" as const,
     }])),
     ...(npcs.length === 0 ? {} : {
       npcs: Object.fromEntries(npcs.map((character) => [character.id, {
         summary: `${character.name}, someone they meet.`,
-        voice: "Brief.",
+        voice: "Natural and conversational.",
         knowledge: [],
         wants: ["To be left in peace"],
       }])),

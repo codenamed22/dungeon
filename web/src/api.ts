@@ -117,6 +117,12 @@ export const api = {
     "POST", `${at(worldId)}/steer`, { text, ...(targetId ? { targetId } : {}) },
   ),
   introduce: (worldId: string, input: IntroduceInput) => request<{ sequence: number }>("POST", `${at(worldId)}/introduce`, input),
+  enter: (worldId: string, characterId: string, locationId: string, text?: string) => request<{ sequence: number }>(
+    "POST", `${at(worldId)}/enter`, { characterId, locationId, ...(text ? { text } : {}) },
+  ),
+  exit: (worldId: string, characterId: string, text?: string) => request<{ sequence: number }>(
+    "POST", `${at(worldId)}/exit`, { characterId, ...(text ? { text } : {}) },
+  ),
   retcon: (worldId: string, sequence: number, text: string) => request<{ sequence: number }>("POST", `${at(worldId)}/retcon`, { sequence, text }),
   branch: (worldId: string, through: number, id: string, name?: string) => request<WorldView>(
     "POST", `${at(worldId)}/branch`, { through, id, ...(name ? { name } : {}) },

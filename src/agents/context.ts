@@ -4,6 +4,7 @@ import { difficultyBandSchema, rulesOf } from "../model.ts";
 import type { Ability, AdventureEvent, Character, WorldRules, WorldState } from "../model.ts";
 import { difficultyBand, perceive } from "../perception.ts";
 import type { AvailableActions, Perception } from "../perception.ts";
+import { inScene } from "../rules.ts";
 import type { Direction } from "./schedule.ts";
 
 /** What an agent remembers beyond its recent events, rendered as prompt lines. */
@@ -152,6 +153,17 @@ export function describeEvent(event: AdventureEvent, state: WorldState, viewerId
       }
       return parts.join(" ");
     }
+    case "character_entered":
+    case "character_exited": {
+      const entered = data.type === "character_entered";
+      const who = subject(data.characterId);
+      const by = viewerId === null && event.source === "director" ? (entered ? "Brought in by the director: " : "Sent away by the director: ") : "";
+      if (data.text === undefined) {
+        return `${stamp} ${by}${who} ${entered ? `arrived at ${place(data.locationId)}` : "left the scene"}.`;
+      }
+      const now = who === "You" ? (entered ? "You are now at" : "You have left the scene") : (entered ? `${who} is now at` : `${who} has left the scene`);
+      return `${stamp} ${by}${data.text} ${now}${entered ? ` ${place(data.locationId)}` : ""}.`;
+    }
     case "retraction":
       return viewerId === null
         ? `${stamp} Retcon of #${data.targetSequence} by the director: ${data.text}`
@@ -278,9 +290,6 @@ export function renderCharacterPrompt(
     ? "Carrying nothing."
     : `Carrying: ${perception.inventory.map((entry) => `${entry.name} (${entry.id}) ×${entry.quantity}`).join(", ")}.`);
   lines.push(...memoryLines(memory, true));
-  lines.push("", "## What you perceived recently, oldest first");
-  lines.push(...(recent.length === 0 ? ["Nothing yet."] : recent));
-  lines.push(...directionLines(direction));
   lines.push("", "## Available actions");
   if (actions.move.length > 0) lines.push(`- move: destinationId one of ${actions.move.join(", ")}`);
   if (actions.transfer.recipients.length > 0 && actions.transfer.items.length > 0) {
@@ -303,6 +312,14 @@ export function renderCharacterPrompt(
     ? "- goal: adopt a goal, or commit to something for someone."
     : "- goal: adopt a goal, or commit to something for someone; or mark one of your open goals fulfilled or abandoned by its ID.");
   lines.push("Leave note and goal null unless something is worth remembering.");
+  // The story comes last, so the turn answers what just happened rather than the format.
+  lines.push("", "## What you perceived recently, oldest first");
+  lines.push(...(recent.length === 0 ? ["Nothing yet."] : recent));
+  lines.push(...directionLines(direction));
+  lines.push("", "## Your turn");
+  lines.push(perception.present.length === 0
+    ? "Nobody else is here, so act rather than speak."
+    : "Respond to what just happened, as yourself: speak, act, or both. Don't repeat what was just said.");
   if (feedback.length > 0) {
     lines.push("", "## Your previous proposal was rejected");
     lines.push(...feedback.map((entry) => `- ${entry}`));
@@ -376,6 +393,7 @@ export function renderNpcPrompt(
   reason: NpcTurnReason = "addressed",
   memory: MemoryView = NO_MEMORY,
   steering: string[] = [],
+  failed: string[] = [],
 ): string {
   const addressed = reason === "addressed";
   const lines = [`It is ${formatClock(perception.elapsedSeconds)} into the story.`, "", "## Where you are"];
@@ -383,17 +401,23 @@ export function renderNpcPrompt(
   lines.push(...memoryLines(memory, false));
   lines.push("", "## What you perceived recently, oldest first", ...(recent.length === 0 ? ["Nothing yet."] : recent));
   lines.push(...steeringLines(steering));
+  if (failed.length > 0) {
+    lines.push("", "## Attempts that just failed in front of you", ...failed);
+    lines.push("That is how it went. If one was after something from you, such as what you know or your help, you did not give it: "
+      + "don't hand it over now in your own words. They may try again another way.");
+  }
   lines.push("", "## Your turn");
   lines.push({
-    addressed: "Someone has spoken to you. Answer in one to three short sentences.",
-    cued: "It is your turn to speak: say something to those present, in one to three short sentences.",
-    agenda: "Nobody has spoken to you, but you have aims of your own. Speak up to pursue one of them, in one to three short sentences.",
+    addressed: "Someone has spoken to you. Answer them, in your own voice.",
+    cued: "It is your turn to speak: say something to those present, in your own voice.",
+    agenda: "Nobody has spoken to you, but you have aims of your own. Speak up to pursue one of them, in your own voice.",
   }[reason]);
   const open = perception.exits.filter((exit) => !exit.blocked).map((exit) => exit.id);
   if (perception.present.length > 0) {
     lines.push(`Set "to" to the ID of the one person you ${addressed ? "answer" : "speak to"}: ${perception.present.map((other) => other.id).join(", ")}; or null.`);
   }
   lines.push(open.length > 0 ? `You may also walk away: set "move" to one of ${open.join(", ")}; or null to stay.` : `Set "move" to null.`);
+  lines.push(`Set "leave" to true only if you leave the scene now, after speaking; otherwise false.`);
   if (feedback.length > 0) {
     lines.push("", "## Your previous reply was rejected", ...feedback.map((entry) => `- ${entry}`));
   }
@@ -410,11 +434,14 @@ export function renderRulingPrompt(
   intent: string,
   recent: string[],
   feedback: string[],
+  said?: Said,
 ): string {
   const perception = perceive(state, actorId);
   const { rules } = perception;
   const limits = state.rulings;
-  const lines = ["## The attempt", `${perception.name} (${actorId}) attempts: "${intent}"`, "", "## Scene"];
+  const lines = [
+    "## The attempt", `${perception.name} (${actorId}) attempts: "${intent}"`, ...saidLine(state, perception.name, said), "", "## Scene",
+  ];
   lines.push(...placeLines(perception));
   lines.push("", "## Challenges here");
   const here = state.challenges.filter((challenge) => challenge.locationId === perception.location.id);
@@ -428,6 +455,7 @@ export function renderRulingPrompt(
     ];
     lines.push(`- ${challenge.name} (${challenge.id}): ${details.join("; ")}${challenge.description ? `. ${challenge.description}` : ""}`);
   }
+  lines.push(...beyondTheScene(state, perception));
   lines.push("", `## ${perception.name}`);
   const status = statusLine(rules, perception.hp, perception.maxHp, perception.modifiers);
   if (status) lines.push(status);
@@ -442,6 +470,29 @@ export function renderRulingPrompt(
     lines.push("", "## Your previous ruling was rejected", ...feedback.map((entry) => `- ${entry}`));
   }
   return lines.join("\n");
+}
+
+/**
+ * What a referee needs to rule on open-ended attempts beyond the scene: who is
+ * away and could be brought in, which supporting characters here could be sent
+ * off, and the challenges in other places, named only so it can point the way.
+ */
+function beyondTheScene(state: WorldState, perception: Perception): string[] {
+  const away = state.characters.filter((character) => !inScene(character));
+  const supporting = state.characters.filter((character) => (
+    character.npc === true && inScene(character) && character.locationId === perception.location.id
+  ));
+  const lines = ["", "## Away from the scene", ...(away.length === 0 ? ["Nobody."] : away.map((character) => `- ${character.name} (${character.id})`))];
+  if (supporting.length > 0) {
+    lines.push(`Supporting characters here: ${supporting.map((character) => `${character.name} (${character.id})`).join(", ")}.`);
+  }
+  const elsewhere = state.challenges.filter((challenge) => challenge.locationId !== perception.location.id && !challenge.resolved);
+  lines.push("", "## Challenges elsewhere (only to point the way)");
+  if (elsewhere.length === 0) lines.push("None.");
+  for (const challenge of elsewhere) {
+    lines.push(`- ${challenge.name}, at ${nameIn(state.locations, challenge.locationId)}${challenge.description ? `: ${challenge.description}` : ""}`);
+  }
+  return lines;
 }
 
 /** An ability as the dice referee gives it: its key, with the world's name when that differs. */
@@ -466,6 +517,19 @@ function newCheckLimits(rules: WorldRules, limits: NonNullable<WorldState["rulin
   ];
 }
 
+/** Words the actor speaks in the same turn as an attempt, which commit with it and so are not yet among the recent events. */
+export interface Said {
+  text: string;
+  addresseeId?: string | undefined;
+}
+
+/** The actor's words as part of the attempt, under "## The attempt". */
+function saidLine(state: WorldState, name: string, said: Said | undefined): string[] {
+  if (!said) return [];
+  const to = said.addresseeId === undefined ? "" : ` to ${nameIn(state.characters, said.addresseeId)}`;
+  return [`As they do it, ${name} says${to}: "${said.text}"`];
+}
+
 /** What a judgment-world referee is asked to judge: an attempt at a listed challenge, or an open-ended one. */
 export type JudgedAttempt = { challengeId: string; approach?: string | undefined } | { intent: string };
 
@@ -481,6 +545,7 @@ export function renderJudgingPrompt(
   recent: string[],
   discoveries: string[],
   feedback: string[],
+  said?: Said,
 ): string {
   const perception = perceive(state, actorId);
   const { rules } = perception;
@@ -491,6 +556,7 @@ export function renderJudgingPrompt(
     const approach = attempt.approach ? `, going about it like this: "${attempt.approach}"` : ", without saying how";
     lines.push(`${perception.name} (${actorId}) attempts "${nameIn(state.challenges, attempt.challengeId)}" (${attempt.challengeId})${approach}.`);
   }
+  lines.push(...saidLine(state, perception.name, said));
   lines.push("", "## Scene", ...placeLines(perception), "", "## Challenges here");
   const here = state.challenges.filter((challenge) => (
     challenge.locationId === perception.location.id && ("intent" in attempt || challenge.id === attempt.challengeId)
@@ -507,6 +573,7 @@ export function renderJudgingPrompt(
     lines.push(`- ${challenge.name} (${challenge.id}): ${details.join("; ")}${challenge.description ? `. ${challenge.description}` : ""}`);
     lines.push(`  What it takes (hidden): ${challenge.criteria ?? "not stated; judge what is plausible here"}`);
   }
+  if ("intent" in attempt) lines.push(...beyondTheScene(state, perception));
   lines.push("", `## ${perception.name}`);
   const status = statusLine(rules, perception.hp, perception.maxHp, perception.modifiers);
   if (status) lines.push(status);

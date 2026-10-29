@@ -115,6 +115,8 @@ function EventItem({ event, view, viewer, retractedBy, actions, canRetcon, canBr
     if (event.type === "threat_triggered") kind = "threat";
     else if (event.type === "story_ended") kind = "ending";
     else if (event.type === "steering" || event.type === "introduced" || event.type === "retraction") kind = "director";
+    // Someone the director brought in or sent away; the story's own entrances and exits read as plain lines.
+    else if ((event.type === "character_entered" || event.type === "character_exited") && event.source === "director") kind = "director";
     else if (PRIVATE.has(event.type) || HIDDEN.has(event.type)) kind = "aside";
     // The director's wording, even in a character's view: it names everyone instead of saying "you".
     body = <div>{unstamped(event.line)}</div>;

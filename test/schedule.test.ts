@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { starterWorld } from "../src/adventures/starter.ts";
 import { computeMetrics } from "../src/agents/metrics.ts";
-import { chooseNextActor, lastCharacterTurn, turnHistory, turnsWithoutAction } from "../src/agents/schedule.ts";
+import { chooseNextActor, lastCharacterTurn, togetherIn, turnHistory, turnsWithoutAction } from "../src/agents/schedule.ts";
 import type { TurnRecord } from "../src/agents/schedule.ts";
 import type { TraceRecord } from "../src/engine.ts";
 import type { AdventureEvent } from "../src/model.ts";
@@ -41,6 +41,17 @@ test("the addressed actor answers, unless someone else has waited a full round",
   assert.equal(chooseNextActor([turn("mira", "stranger")], agents, npcs), "bram");
   assert.equal(chooseNextActor([turn("mira", "tamsin")], agents, new Set()), "bram");
   assert.equal(chooseNextActor([turn("mira", "bram")], ["mira", "elowen"], npcs), "elowen", "an incapacitated addressee cannot answer");
+});
+
+test("nobody answers a speaker who has left", () => {
+  const apart = (a: string, b: string) => !(a === "mira" && b === "elowen");
+  assert.equal(chooseNextActor([turn("mira", "elowen")], agents, npcs, [], apart), "bram");
+  assert.equal(chooseNextActor([turn("mira", "tamsin")], agents, npcs, [], apart), "tamsin", "someone still there answers");
+  const state = initialState(starterWorld("apart"));
+  const together = togetherIn(state);
+  assert.equal(together("mira", "tamsin"), true);
+  assert.equal(together("mira", "elowen"), false, "Elowen starts at the aqueduct mouth");
+  assert.equal(together("mira", "stranger"), false);
 });
 
 test("NPCs never act unaddressed, so they cannot loop on their own", () => {

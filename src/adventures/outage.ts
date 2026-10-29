@@ -5,7 +5,8 @@ import type { WorldSeed } from "../model.ts";
 // consoles they can open, and the only item is access. No stats and no
 // health: the referee judges each step against what it takes, and the clues
 // sit in private discoveries. The incident commander's theory is wrong, and
-// acting on it makes things worse.
+// acting on it makes things worse. The VP starts away from the scene and joins
+// the call at minute 35, wanting answers.
 export function outageWorld(id = "outage"): WorldSeed {
   return {
     id,
@@ -58,6 +59,10 @@ export function outageWorld(id = "outage"): WorldSeed {
       { id: "dan", name: "Dan", locationId: "war-room", hp: 10, maxHp: 10, modifiers: { strength: 0, dexterity: 0, wisdom: 0 }, inventory: {} },
       { id: "morgan", name: "Morgan", locationId: "war-room", hp: 10, maxHp: 10, npc: true, modifiers: { strength: 0, dexterity: 0, wisdom: 0 }, inventory: {} },
       { id: "wen", name: "Wen", locationId: "database", hp: 10, maxHp: 10, npc: true, modifiers: { strength: 0, dexterity: 0, wisdom: 0 }, inventory: {} },
+      {
+        id: "sloane", name: "Sloane", locationId: "war-room", hp: 10, maxHp: 10, npc: true, away: true,
+        modifiers: { strength: 0, dexterity: 0, wisdom: 0 }, inventory: {},
+      },
     ],
     challenges: [
       {
@@ -151,8 +156,9 @@ export function outageWorld(id = "outage"): WorldSeed {
       {
         id: "vp-joins",
         name: "The VP joins",
-        text: "The VP of Engineering joins the call, camera on: \"I need a cause and an ETA in ten minutes.\"",
+        text: "Sloane, the VP of Engineering, joins the call, camera on: \"I need a cause and an ETA in ten minutes.\"",
         locationIds: ["war-room"],
+        enters: [{ characterId: "sloane", locationId: "war-room" }],
         status: "armed",
         at: 2100,
       },
@@ -202,12 +208,14 @@ export const outageCast: Cast = {
   characters: {
     priya: {
       summary: "A site reliability engineer, five years on call. Trusts evidence over theories and timestamps over everything.",
+      knownAs: "the site reliability engineer on call",
       voice: "Calm, clipped, asks for specifics.",
       goals: ["Find what changed at 02:58", "Restore checkout before morning traffic"],
       riskTolerance: "cautious",
     },
     dan: {
       summary: "A backend engineer who owns the checkout service and shipped last night's 02:45 release. Worried it was his fault.",
+      knownAs: "the backend engineer on call, who owns the checkout service",
       voice: "Fast, a bit anxious, thinks aloud.",
       goals: ["Prove or rule out the 02:45 deploy", "Get checkout working again"],
       riskTolerance: "bold",
@@ -216,6 +224,7 @@ export const outageCast: Cast = {
   npcs: {
     morgan: {
       summary: "The incident commander tonight: decisive, under pressure from above, and sure it was the deploy.",
+      knownAs: "the incident commander tonight, who approves break-glass access",
       voice: "Short sentences. Wants a cause and an ETA.",
       knowledge: [
         "The 02:45 checkout release is the only change tonight, so it must be the cause; only hard evidence will change your mind",
@@ -226,12 +235,25 @@ export const outageCast: Cast = {
     },
     wen: {
       summary: "The database engineer on call, half awake, watching connection graphs.",
+      knownAs: "the database engineer on call",
       voice: "Sleepy, dry, precise about her own systems.",
       knowledge: [
         "The database is fine; the spike is clients reconnecting since about 02:58",
         "Last month someone deleted old DNS zones in a cleanup (she does not connect this to tonight)",
       ],
       wants: ["To prove it isn't the database", "To go back to bed"],
+    },
+    sloane: {
+      summary: "The VP of Engineering, woken by the escalation. Has to brief the CEO before the markets open; impatient with "
+        + "guesses, and quick to back whoever has evidence.",
+      knownAs: "the VP of Engineering",
+      voice: "Cool and measured. Asks pointed questions and expects one-sentence answers.",
+      knowledge: [
+        "Checkout has been down since about 03:00, and the CEO wants an update by 04:00",
+        "Morgan told you on the way in that last night's deploy is the likely cause",
+      ],
+      wants: ["A cause and an ETA, in plain words", "Nobody making it worse by guessing"],
+      agenda: { everyMinutes: 8, aims: ["Ask for the cause and an ETA", "Ask who is doing what right now"] },
     },
   },
 };

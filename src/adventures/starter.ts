@@ -141,18 +141,21 @@ export const starterCast: Cast = {
   characters: {
     mira: {
       summary: "A quick, light-footed scout who hates wasting daylight.",
+      knownAs: "the party's scout",
       voice: "Clipped and wry; short sentences.",
       goals: ["Get inside the city before nightfall", "Keep the rope for the climb out"],
       riskTolerance: "bold",
     },
     bram: {
       summary: "A former quarry worker, strong and steady, protective of the others.",
+      knownAs: "a former quarry worker, the party's muscle",
       voice: "Slow, plain, and warm; fond of quarry sayings.",
       goals: ["Keep everyone unhurt", "Take on the heavy work rather than let others get hurt"],
       riskTolerance: "cautious",
     },
     elowen: {
       summary: "A scholar of old waterworks who came for whatever the city buried.",
+      knownAs: "a scholar of old waterworks, traveling with the party",
       voice: "Precise and curious, a little impatient with guesswork.",
       goals: ["Reach the cistern vault and see what lies there", "Understand the aqueduct before forcing it"],
       riskTolerance: "balanced",
@@ -161,6 +164,7 @@ export const starterCast: Cast = {
   npcs: {
     tamsin: {
       summary: "A goatherd who has grazed this ridge for forty years and watched the city empty.",
+      knownAs: "a goatherd who has grazed this ridge for forty years",
       voice: "Dry, unhurried, and fond of answering a question with a question.",
       knowledge: [
         "The bars at the aqueduct mouth are rusted, and a strong lever could shift them",

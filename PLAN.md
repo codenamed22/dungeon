@@ -78,7 +78,15 @@
   (a mystery with lying suspects). Headless Chrome drove the rules card, the
   hidden criteria, the Endings tab, Undo after turning stats off, and a
   scripted judged turn to an ending, at 1440 px and 390 px, with no console
-  errors or sideways scrolling. No live-model run has used judgment yet.
+  errors or sideways scrolling. A live run of *The 3 A.M. Outage* (DeepSeek
+  Pro, low reasoning effort, 2026-10-29) reached "Restored" in 21 turns for
+  0.12 credits with no failed turns. The referee refused break-glass access
+  without evidence or with the commander away, created a sensible new check,
+  and accepted the fix from a character told about the expired certificate. Two
+  faults showed. An automatic ruling's narration had the commander rejoin the
+  bridge, though the engine never moved him, and a later judgment relied on it.
+  And a threat due during the final action never fired, because the ending came
+  first.
 - **Google sign-in: complete locally.** Verified 2026-10-29: both projects
   typecheck, the interface builds, and all 192 tests pass on local PostgreSQL
   16. Sign-in uses Auth.js (`@auth/core` 0.41.3, the version under Traveller's
@@ -90,6 +98,162 @@
   account choosing another, at 1440 px and 390 px, with no console errors; the
   earlier genre checks still pass without a login. Signing in with a real
   Google account is still to do.
+- **Natural dialogue (prompt version 7.0): complete locally.** The user found the characters' replies mechanical, curt, and hard to
+  follow. Traces of the Outage run showed why. The prompt capped speech at one
+  to three short sentences and was mostly game mechanics. Characters didn't know
+  who anyone else was: Dan never learned that Morgan was the incident
+  commander. And people answered someone who had just left. The fixes:
+  - character and NPC prompts now say how to talk: react, answer, don't repeat
+    or announce actions, stay quiet when alone, and use up to about 80 words
+    (the limit is now 700 characters);
+  - risk is described as behaviour rather than a label;
+  - an optional persona line, "who they are to the others", builds a who's-who
+    list for every agent, and the five sample worlds and the AI creator now
+    write it;
+  - the turn prompt ends with the story rather than the reply format;
+  - the scheduler only has someone answer a speaker who is still there;
+  - default voices are no longer "Plain and brief";
+  - the referee may no longer rule that moving, an item changing hands, or
+    someone else's choice "simply works", and the narrator no longer describes
+    one as if it did (the first fault from the Outage run).
+
+  Verified 2026-10-29: typecheck, the interface builds, and all 195 tests pass
+  on local PostgreSQL 16. Two live runs on DeepSeek V4 Flash (low reasoning)
+  cost 0.030 credits in all:
+  - *The 3 A.M. Outage* reached "Restored" in 16 turns. The characters spoke in
+    full, in character, and treated Morgan as the commander. Nobody announced
+    actions or talked alone.
+  - *Night Market* gave warm, natural dialogue and a lively Jordan. But the
+    characters confessed everything in plain speech in the first minute, so
+    the confession challenge never ran and they repeated declarations of love
+    for 20 turns.
+  - The referee let "board the ferry" simply work, so the narrator put them on
+    a ferry the engine never moved them to. A verdict said a rollback "begins
+    restoring checkout", and the narrator built on it.
+  - One turn hit the 4096-token output limit while reasoning.
+
+  Prompt changes after these runs:
+  - say a thing once, and hold back what you aren't ready to say;
+  - speech never completes a challenge, so attempt it, with the words as the
+    approach;
+  - boarding or entering something counts as moving;
+  - verdicts never claim consequences.
+
+  A second *Night Market* run (30 turns, 0.017 credits, no failed turns)
+  paced well:
+  - Sam deflected at first, and Alex built up to the confession over ring-toss
+    banter.
+  - The conversation then explored the Lisbon decision without repeating
+    itself, and Sam bristled when Jordan let the news out.
+  - One gap remains. Alex attempted the confession at the market gate, so the
+    referee made a new check rather than using the world's confession
+    challenge, which is on the bridge. The "Together" ending never fired.
+    Characters can't see challenges in other places, so nothing tells them
+    the bridge is where a confession counts.
+- **Entrances and exits: complete locally.** The user asked
+  for characters to leave and enter the scene, by the story, the game master,
+  or the director. Anyone, main characters included, can now be away from the
+  scene (`away: true`). An away character keeps its last place, takes no
+  turns, can't be addressed, handed anything, or hurt, and perceives nothing.
+  - The director brings someone in at a place, or sends someone away, from the
+    Characters tab, the CLI (`enter`, `exit`), or the API.
+  - A threat can bring characters in and send them away. A world can start
+    someone away, and the creator has an "In the scene / Away" toggle plus a
+    threat's "It brings in" and "It sends away".
+  - The game master acts only when the story causes it, with no extra model
+    calls: a supporting character may leave after speaking, and the referee
+    names whom a working attempt brings in (`bringsIn`, such as paging
+    someone) or sends off (`sendsOut`).
+  - Two new events, `character_entered` and `character_exited`, cost no time.
+    Replay checks their cause: a threat or ruling that names them, or an NPC's
+    own words just before it leaves. The event format stays at 2, and no
+    existing world changes, since nobody in one is away.
+  - In *The 3 A.M. Outage*, the VP is now Sloane, a supporting character who
+    starts away and joins the call at minute 35.
+  - The referee fix from the *Night Market* run: the referee now sees the
+    challenges in other places, by name and description only, and rules an
+    attempt that belongs elsewhere impossible, naming the place.
+
+  Verified 2026-10-29: typecheck, the interface builds, and all 208 tests pass
+  on local PostgreSQL 16. Headless Chrome brought Sloane in and sent Wen away
+  from the Characters tab, showed the Away row in the World tab, and showed the
+  creator's toggle and a threat's entrances, at 1440 px and 390 px, with no
+  console errors.
+
+  Two live runs on DeepSeek V4 Flash (low reasoning) cost 0.029 credits in all,
+  with no failed turns, and both worlds replay:
+  - *The 3 A.M. Outage* reached minute 32 in 20 turns, three minutes before the
+    VP was due, with the fix one action away. That action would have ended the
+    story before the VP's threat fired (the first fault below, since fixed), so
+    the director brought Sloane in onto the gateway console with `enter`. Only
+    Dan, Priya, and Sloane perceived it. Sloane's agenda had them speak up at
+    once ("I need a cause and an ETA by 04:00, plain words, no guesses"). Dan
+    and Priya briefed them in character, with cause and ETA, and Priya then
+    reached "Restored" at 0:39:30. The VP's threat, due at 0:35:00, never fired
+    because the ending came first.
+  - *Night Market* reached "Together" in 23 turns. Sam put off the news until
+    the bridge, Alex confessed there through the world's challenge, and the
+    ending fired. Every attempt was at a challenge where the character stood,
+    so the referee never ruled an open-ended attempt, and the pointer to other
+    places went untested live.
+  - Three faults, all older than this change:
+    - A threat that came due during an action was skipped when the action's
+      outcome ended the story, so the VP never arrived.
+    - Mei told Alex about Sam's big decision in her own words straight after
+      Alex failed the challenge to ask her. A supporting character's speech can
+      undercut a failed challenge.
+    - The referee failed Sam's "Tell Alex about Lisbon" for not saying when the
+      answer was due. Sam's words just before had said Monday; the judgment
+      went by the approach phrase.
+- **The three faults from those runs: fixed locally.**
+  - A threat that comes due during an action now happens first, since it did:
+    the engine appends the action's ending only after any threat the action's
+    time made due, and that threat's own ending wins if it has one. In the
+    Outage, the VP arrives before "Restored", and morning traffic during the
+    rotation means "Full outage". Histories stored with the old order still
+    replay.
+  - The referee hears what the character says as they make the attempt. The
+    referee and the judge are called before the turn is stored, so the
+    turn's own words never reached them; their prompts now include
+    "As they do it, Priya says: …", and the judge is told those words count
+    as part of the approach.
+  - A supporting character whom an attempt just failed to get something from
+    is told so before its next words: "## Attempts that just failed in front
+    of you", with the referee's reason, and that it did not give what was
+    asked, so it shouldn't hand it over now. The notice lists only failures
+    since the character last spoke. Its system prompt says the same in one
+    line.
+
+  Verified 2026-10-29: typecheck, the interface builds, and all 211 tests pass
+  on local PostgreSQL 16.
+
+  Two live runs on DeepSeek V4 Flash (low reasoning) cost 0.022 credits in all,
+  and both worlds replay:
+  - *The 3 A.M. Outage* reached "Restored" in 20 turns. Priya's rotation ran
+    from 0:28:20 to 0:35:20. The VP's threat, due at 0:35:00, fired first and
+    Sloane arrived, then the story ended. Earlier, Morgan refused Priya's
+    break-glass request without evidence ("Not yet… Give me hard evidence") straight after
+    it failed. A rebuilt prompt confirms Morgan's notice was in it.
+  - *Night Market* reached "Together" in 14 turns. Mei answered Alex's failed
+    question vaguely ("head in the clouds with work") and gave nothing away;
+    her prompt carried the notice. The referee failed Sam's "Tell Alex about
+    Lisbon" this time because Sam didn't ask what Alex thought, and it named
+    the Monday deadline, said in the same turn. That matches the challenge's
+    criteria.
+  - Two new faults, both fixed since:
+    - The narrator timed out (120 s, OpenRouter) on the Outage's ending, and
+      `run` stopped as "ended" without retrying, because it checked for the
+      end before narration still owed. `run` now narrates an owed ending
+      first. A one-turn run then narrated the ending (0.0006 credits) and
+      stopped as "ended" with no turns taken.
+    - That narration covered both Priya's rotation at the gateway and Sloane's
+      arrival on the bridge, so it reached everyone who perceived either:
+      Dan and Priya heard of an arrival they didn't see ("she spots Sloane's
+      tile appear"), and Morgan and Sloane of the reload. Narration now covers
+      only what the acting character perceived; an arrival elsewhere is left
+      to the threat's own text. Event #59 of that run keeps the old narration.
+
+  Verified after both fixes: all 213 tests pass.
 - Development and tests use local PostgreSQL or a Neon development branch, not the
   `production` branch.
 
@@ -100,7 +264,8 @@ group chat. Agents control dialogue and intentions; the engine controls outcomes
 The director can pause, step, steer, or introduce explicit world events.
 
 Start with three character agents, one DM agent, and a deterministic software
-controller. Keep dialogue short, usually one to three sentences.
+controller. Dialogue should sound like people talking: as long as the moment
+needs, usually a few sentences, never a report of what the speaker is doing.
 
 ## Architecture and authority
 

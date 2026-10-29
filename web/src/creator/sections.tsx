@@ -431,8 +431,9 @@ function CharacterCard({ editor, draft, onToast, character, number, open, onTogg
   const carried = Object.entries(character.inventory).flatMap(([itemId, count]) => Array.from({ length: count }, () => itemId));
   const { health } = rulesOf(seed);
   const stats = statOptions(seed);
+  const away = character.away === true;
   const subtitle = [
-    placeKnown ? `starts in ${nameIn(seed, character.locationId)}` : "starts nowhere",
+    placeKnown ? `${away ? "starts away, appears at" : "starts in"} ${nameIn(seed, character.locationId)}` : "starts nowhere",
     health === null ? null : `${character.maxHp} ${health}`,
     persona ? null : npc ? "never speaks" : "no agent plays them",
   ].filter(Boolean).join(" · ");
@@ -441,13 +442,17 @@ function CharacterCard({ editor, draft, onToast, character, number, open, onTogg
       open={open} onToggle={onToggle} flagged={!placeKnown}>
       <div className="form-grid">
         <LiveText label="Name" value={character.name} maxLength={100} commit={(name) => apply((current) => upsertCharacter(current, { id, name }))} />
-        <Field label="Starts in">
+        <Field label={away ? "Appears at" : "Starts in"}>
           <select value={character.locationId} onChange={(event) => apply((current) => upsertCharacter(current, { id, placeId: event.target.value }))}>
             {!placeKnown && <option value={character.locationId}>(choose a place)</option>}
             {seed.locations.map((location) => <option key={location.id} value={location.id}>{location.name}</option>)}
           </select>
         </Field>
       </div>
+      <Field label="At the start" hint={away ? "Away until a threat brings them in, someone calls or fetches them, or you bring them in as director." : undefined}>
+        <Segmented label="At the start" value={away ? "away" : "here"} options={[{ value: "here", label: "In the scene" }, { value: "away", label: "Away" }]}
+          onChange={(next) => apply((current) => upsertCharacter(current, { id, startsAway: next === "away" }))} />
+      </Field>
       <Field label="Role" hint={persona ? "Changing the role removes the persona, since main and supporting characters have different ones." : undefined}>
         <Segmented label="Role" value={npc ? "npc" : "party"} options={[{ value: "party", label: "Main character" }, { value: "npc", label: "Supporting" }]}
           onChange={(next) => {
@@ -519,8 +524,8 @@ function PersonaEditor({ editor, character, persona }: { editor: DraftEditor; ch
         </span>
         <div>
           <button type="button" onClick={() => apply((current) => setPersona(current, npc
-            ? { characterId, summary: `${character.name}.`, voice: "Plain and brief." }
-            : { characterId, summary: `${character.name}, one of the main characters.`, voice: "Plain and brief.", goals: ["See this through, together"] }))}>
+            ? { characterId, summary: `${character.name}.`, voice: "Natural and conversational." }
+            : { characterId, summary: `${character.name}, one of the main characters.`, voice: "Natural and conversational.", goals: ["See this through, together"] }))}>
             <Sparkles size={15} />Write a persona
           </button>
         </div>
@@ -532,6 +537,8 @@ function PersonaEditor({ editor, character, persona }: { editor: DraftEditor; ch
       <span className="eyebrow">Persona: what the AI {npc ? "voicing" : "playing"} {character.name} is told</span>
       <LiveText label="Who they are" multiline rows={2} maxLength={500} value={persona.summary}
         commit={(summary) => apply((current) => setPersona(current, { characterId, summary }))} />
+      <LiveText label="Who they are to the others" maxLength={300} value={persona.knownAs ?? ""} placeholder="e.g. the incident commander tonight" hint="Every AI reads this, so the characters know who they are talking to. No secrets."
+        commit={(knownAs) => apply((current) => setPersona(current, { characterId, knownAs }))} />
       <LiveText label="How they speak" maxLength={500} value={persona.voice} commit={(voice) => apply((current) => setPersona(current, { characterId, voice }))} />
       {"goals" in persona ? (
         <>
@@ -811,6 +818,13 @@ function ThreatCard({ editor, draft, threat, number, open, onToggle, onRemove }:
   const { health } = rulesOf(seed);
   const subtitle = `${armed ? `at minute ${when}` : `${when} min after it is set off`} · ${where}${threat.damage ? ` · ${threat.damage} damage` : ""}`;
   const ends = (seed.endings ?? []).find(({ when: trigger }) => "threatId" in trigger && trigger.threatId === id);
+  const people = seed.characters.map((character) => ({ value: character.id, label: character.name }));
+  const entering = (threat.enters ?? []).map((entry) => entry.characterId);
+  // Everyone a threat brings in arrives at one place, by default where it strikes.
+  const arrival = threat.enters?.[0]?.locationId ?? threat.locationIds?.[0] ?? seed.locations[0]?.id;
+  const bringIn = (characterIds: string[], placeId = arrival) => apply((current) => upsertThreat(current, {
+    id, bringsIn: placeId === undefined ? [] : characterIds.map((characterId) => ({ characterId, placeId })),
+  }));
   return (
     <CardEditor id={id} number={number} kind="threat" title={threat.name} subtitle={subtitle} open={open} onToggle={onToggle}>
       <LiveText label="Name, for you" value={threat.name} maxLength={100} commit={(name) => apply((current) => upsertThreat(current, { id, name }))} />
@@ -847,6 +861,21 @@ function ThreatCard({ editor, draft, threat, number, open, onToggle, onRemove }:
       <Field label="It opens">
         <ChipChoice options={routes.filter((route) => route.locked || refs(threat.unlockRoutes).includes(route.key)).map((route) => ({ value: route.key, label: route.label }))}
           chosen={refs(threat.unlockRoutes)} empty="No blocked ways." onChange={(next) => apply((current) => upsertThreat(current, { id, opensRoutes: toRoutes(next) }))} />
+      </Field>
+      <Field label="It brings in" hint="Usually someone who starts away, such as a boss who joins the call.">
+        <ChipChoice options={people.filter((person) => !threat.exits?.includes(person.value))} chosen={entering} empty="No characters yet."
+          onChange={(next) => bringIn(next)} />
+      </Field>
+      {entering.length > 0 && arrival !== undefined && (
+        <Field label="They arrive at">
+          <select value={arrival} onChange={(event) => bringIn(entering, event.target.value)}>
+            {seed.locations.map((location) => <option key={location.id} value={location.id}>{location.name}</option>)}
+          </select>
+        </Field>
+      )}
+      <Field label="It sends away">
+        <ChipChoice options={people.filter((person) => !entering.includes(person.value))} chosen={threat.exits ?? []} empty="No characters yet."
+          onChange={(sendsAway) => apply((current) => upsertThreat(current, { id, sendsAway }))} />
       </Field>
       <div className="card-actions">
         <span className="muted small">ID {id}</span>

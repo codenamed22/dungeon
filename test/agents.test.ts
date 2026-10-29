@@ -5,7 +5,7 @@ import {
   describeEvent, formatClock, renderCharacterPrompt, renderNpcPrompt, renderRulingPrompt,
 } from "../src/agents/context.ts";
 import {
-  characterSystemPrompt, judgeSystemPrompt, narratorSystemPrompt, npcSystemPrompt, refereeSystemPrompt,
+  characterSystemPrompt, frameOf, judgeSystemPrompt, narratorSystemPrompt, npcSystemPrompt, refereeSystemPrompt,
 } from "../src/agents/prompts.ts";
 import {
   characterTurnSchema, ProposalError, rulingSchema, toNpcParts, toRuling, toTurnParts,
@@ -41,7 +41,7 @@ test("model output converts to engine commands with per-action checks", () => {
   });
   for (const [output, message] of [
     [{ to: null, speech: "   ", action: null }, /Say something/],
-    [{ to: null, speech: "x".repeat(501), action: null }, /at most 500/],
+    [{ to: null, speech: "x".repeat(701), action: null }, /at most 700/],
     [{ to: null, speech: null, action: { ...none, type: "move" } }, /move requires destinationId/],
     [{ to: null, speech: null, action: { ...none, type: "transfer_item", recipientId: "bram", itemId: "rope" } }, /requires quantity/],
     [{ to: null, speech: null, action: { ...none, type: "wait", minutes: 0 } }, /between 1 and 60/],
@@ -89,7 +89,36 @@ test("a character prompt lists IDs and legal actions, and carries feedback", () 
   assert.doesNotMatch(prompt, /attempt_check/);
   const system = characterSystemPrompt("Elowen", starterCast.characters.elowen!);
   assert.match(system, /You are Elowen/);
-  assert.match(system, /Attitude to risk: balanced/);
+  assert.match(system, /How you take risks: with judgment/);
+  assert.doesNotMatch(system, /short sentences|balanced/);
+});
+
+test("every agent knows who's who, and a turn ends with the story, not the format", () => {
+  const state = initialState(starterWorld("who"));
+  const frame = frameOf(starterCast, state);
+  assert.deepEqual(frame.people.map((person) => person.name), ["Mira", "Bram", "Elowen", "Old Tamsin"]);
+  const system = characterSystemPrompt("Mira", starterCast.characters.mira!, frame);
+  assert.match(system, /Who you are to the others: the party's scout/);
+  assert.match(system, /Who's who, as everyone in the story knows:\n- Bram: a former quarry worker/);
+  assert.match(system, /- Old Tamsin: a goatherd/);
+  assert.doesNotMatch(system, /- Mira:/, "nobody is listed to themselves");
+  assert.match(system, /Don't announce your own action/);
+  assert.match(npcSystemPrompt("Old Tamsin", starterCast.npcs!.tamsin!, frame), /- Mira: the party's scout/);
+  for (const prompt of [narratorSystemPrompt("Plain.", frame), refereeSystemPrompt(frame), judgeSystemPrompt(frame)]) {
+    assert.match(prompt, /- Elowen: a scholar of old waterworks/);
+  }
+  // A cast without known-as lines lists nobody.
+  const plain = { ...starterCast, characters: { mira: { ...starterCast.characters.mira!, knownAs: undefined } }, npcs: {} };
+  assert.deepEqual(frameOf(plain, state).people, []);
+  assert.doesNotMatch(characterSystemPrompt("Mira", plain.characters.mira, frameOf(plain, state)), /Who's who|to the others:/);
+
+  const recent = ["#2 [0:00:10] Bram said to you: \"Shall we?\""];
+  const prompt = renderCharacterPrompt(perceive(state, "mira"), availableActions(state, "mira"), recent, []);
+  const order = ["## Available actions", "## Remembering, alongside your turn", "## What you perceived recently", "## Your turn"].map((heading) => prompt.indexOf(heading));
+  assert.ok(order.every((index, position) => index > (order[position - 1] ?? -1)), `sections in order: ${order.join(", ")}`);
+  assert.match(prompt, /## Your turn\nRespond to what just happened, as yourself/);
+  const alone = renderCharacterPrompt(perceive(state, "elowen"), availableActions(state, "elowen"), [], []);
+  assert.match(alone, /## Your turn\nNobody else is here, so act rather than speak\./);
 });
 
 test("prompts never contain hidden facts (canary)", () => {
@@ -213,7 +242,10 @@ test("NPC and referee prompts carry their rules", () => {
   assert.match(ruling, /Difficulty: easy, moderate, hard\./);
   assert.match(ruling, /Minutes: 1 to 10\./);
   assert.match(ruling, /## Your previous ruling was rejected\n- No such challenge here/);
-  assert.doesNotMatch(ruling, /Shift the rubble/, "the referee sees only this location's challenges");
+  // Challenges elsewhere are named only so the referee can point the way: never their rules.
+  assert.match(ruling, /## Challenges elsewhere \(only to point the way\)\n- Shift the rubble fall, at Dry Channel: Loose blocks/);
+  assert.doesNotMatch(ruling, /Shift the rubble fall \(/, "no ID, ability, or difficulty for a challenge elsewhere");
+  assert.match(ruling, /## Away from the scene\nNobody\./);
   assert.match(refereeSystemPrompt(), /never decide whether the attempt succeeds/);
   assert.match(characterSystemPrompt("Mira", starterCast.characters.mira!), /set "to" to their ID/);
 });

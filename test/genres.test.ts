@@ -8,7 +8,7 @@ import { outageCast, outageWorld } from "../src/adventures/outage.ts";
 import { starterWorld } from "../src/adventures/starter.ts";
 import { castProblems, castSchema } from "../src/agents/prompts.ts";
 import type { Cast } from "../src/agents/prompts.ts";
-import { ScriptedProvider } from "../src/agents/provider.ts";
+import { ProviderError, ScriptedProvider } from "../src/agents/provider.ts";
 import type { ModelRequest, ScriptStep } from "../src/agents/provider.ts";
 import { DEFAULT_RUNNER_SETTINGS, TurnRunner } from "../src/agents/runner.ts";
 import type { StepOutcome } from "../src/agents/runner.ts";
@@ -161,6 +161,40 @@ test("an ending fires when its threat happens, and threats still due never fire"
   assert.equal(session.state.elapsedSeconds, 600);
   assert.equal(session.state.threats!.find((threat) => threat.id === "social-media")?.status, "armed");
   assert.throws(() => session.commit({ actorId: "dan", action: { type: "wait", seconds: 60 } }), errorCode("INVALID_ACTION"));
+});
+
+test("a threat that comes due during an action happens before the ending the action reaches", () => {
+  /** Priya at the gateway with the token, and the given threat due a minute into the seven-minute rotation. */
+  const rotation = (threatId: string) => {
+    const seed = placed(outageWorld(`during-${threatId}`), { priya: "gateway" });
+    seed.characters = seed.characters.map((character) => (
+      character.id === "priya" ? { ...character, inventory: { "admin-token": 1 } } : character
+    ));
+    seed.threats = seed.threats!.map((threat) => (threat.id === threatId ? { ...threat, at: 60 } : threat));
+    const session = new Session(seed);
+    const committed = session.commit({
+      actorId: "priya", action: { type: "attempt_check", challengeId: "rotate-certificate", approach: "Issue a new certificate and reload" },
+      judgment: judged(true),
+    });
+    return { seed, session, committed };
+  };
+
+  const { seed, session, committed } = rotation("vp-joins");
+  assert.deepEqual(types(committed), ["check_resolved", "threat_triggered", "character_entered", "story_ended"]);
+  assert.equal(session.state.endedWith, "restored");
+  assert.equal(session.state.characters.find((character) => character.id === "sloane")?.away, undefined, "the VP arrived in time to see it");
+
+  const traffic = rotation("morning-traffic");
+  assert.deepEqual(types(traffic.committed), ["check_resolved", "threat_triggered", "story_ended"]);
+  assert.equal(traffic.session.state.endedWith, "full-outage", "the traffic arrived before the reload finished");
+
+  // Earlier versions recorded the action's ending first and skipped the threat; those histories still replay.
+  const [check, , , ended] = committed;
+  const replayer = new Replayer();
+  replayer.apply(creationEvent(seed));
+  replayer.apply(check!.event);
+  replayer.apply({ ...ended!.event, sequence: check!.event.sequence + 1 });
+  assert.equal(replayer.state!.endedWith, "restored");
 });
 
 test("replay accepts an ending only right after the outcome or threat that causes it", () => {
@@ -394,6 +428,50 @@ test("judgment worlds with agents", {
       assert.match(provider.requests.at(-1)!.prompt, /thousand miles away/);
     });
 
+    await t.test("the referee hears what the character says as they make the attempt", async () => {
+      const { id } = await engine.createWorld(placed(outageWorld("judge-hears"), { priya: "logs" }));
+      const { provider, runner } = scripted([
+        act("Scoping it to checkout, 02:58 to 03:00.", { type: "attempt_check", challengeId: "search-logs", approach: "Filter the logs" }),
+        { role: "dm", output: { success: true, reason: "Scoped to checkout at 02:58, the first error stands out." } },
+        narrate("One red line."),
+        act("Paging security, it's urgent.", { type: "attempt", intent: "Page the security team" }),
+        rule({ decision: "automatic", minutes: 1, reason: "Anyone can send a page." }),
+        narrate("The page goes out."),
+      ], outageCast);
+      await runner.step(id, undefined, { actorId: "priya" });
+      await runner.step(id, undefined, { actorId: "priya" });
+      const [, judge, , , ruling] = provider.requests;
+      assert.equal(judge!.schemaName, "judge");
+      assert.match(judge!.prompt, /As they do it, Priya says: "Scoping it to checkout, 02:58 to 03:00\."/);
+      assert.match(judge!.system, /What the character says as they make the attempt is part of how they go about it/);
+      assert.match(ruling!.prompt, /As they do it, Priya says: "Paging security, it's urgent\."/);
+    });
+
+    await t.test("a supporting character doesn't hand over what an attempt just failed to get from them", async () => {
+      const { id } = await engine.createWorld(outageWorld("npc-holds"));
+      const { provider, runner } = scripted([
+        { role: "character", output: {
+          speech: "Morgan, I need gateway admin. Trust me.", to: "morgan",
+          action: { ...noAction, type: "attempt_check", challengeId: "get-access", approach: "Ask Morgan for access" },
+        } },
+        { role: "dm", output: { success: false, reason: "Priya offered no evidence." } },
+        narrate("Morgan shakes their head."),
+        { role: "dm", output: { speech: "Not on a hunch.", to: "priya", move: null, leave: false } },
+        { role: "character", output: { speech: "Fair. I'll get you the logs.", to: "morgan", action: null } },
+        { role: "dm", output: { speech: "Good.", to: "priya", move: null, leave: false } },
+      ], outageCast);
+      await runner.step(id, undefined, { actorId: "priya" });
+      await runner.step(id, undefined, { actorId: "morgan" });
+      const first = provider.requests[3]!;
+      assert.match(first.prompt, /## Attempts that just failed in front of you\n- Priya tried "Get break-glass access", and it didn't work\. The referee: Priya offered no evidence\./);
+      assert.match(first.prompt, /you did not give it: don't hand it over now in your own words/);
+      assert.match(first.system, /If someone failed to get something from you, you didn't give it/);
+
+      await runner.step(id, undefined, { actorId: "priya" });
+      await runner.step(id, undefined, { actorId: "morgan" });
+      assert.doesNotMatch(provider.requests[5]!.prompt, /Attempts that just failed/, "once Morgan has spoken since, the notice is gone");
+    });
+
     await t.test("a talking scene keeps going at conversation pace", async () => {
       const { id } = await engine.createWorld(nightMarketWorld("talk"));
       const { provider, runner } = scripted(Array.from({ length: 9 }, (_, index) => say(`Line ${index + 1}.`)), nightMarketCast);
@@ -418,6 +496,48 @@ test("judgment worlds with agents", {
       assert.deepEqual(report.outcomes.map(label).slice(-1), ["narration"]);
       assert.equal((await engine.getWorld(id)).endedWith, "together");
       await assert.rejects(runner.step(id, undefined, { actorId: "sam" }), /The story has ended/);
+    });
+
+    await t.test("a run retries the ending's narration when the narrator fails, before it stops", async () => {
+      const { id } = await engine.createWorld(placed(nightMarketWorld("finale-retry"), { alex: "bridge", sam: "bridge" }));
+      const { runner } = scripted([
+        act("Sam, I need to tell you something.", { type: "attempt_check", challengeId: "confess" }),
+        { role: "dm", output: { success: true, reason: "It comes out plainly." } },
+        { role: "dm", error: new ProviderError("timeout", "No reply within 120 s") },
+        narrate("Sam laughs, then doesn't."),
+      ], nightMarketCast);
+      const report = await runner.run(id, { maxTurns: 5 });
+      assert.equal(report.stopReason, "ended");
+      assert.deepEqual(report.outcomes.map(label), ["alex", "failed:narrator", "narration"]);
+      assert.equal(report.turns, 1);
+      const [check] = await eventsOf(id, "check_resolved");
+      const [ended] = await eventsOf(id, "story_ended");
+      const [narration] = await eventsOf(id, "narration");
+      assert.ok(check && ended && narration?.data.type === "narration");
+      assert.deepEqual(narration.data.aboutSequences, [check.sequence]);
+      assert.ok(narration.sequence > ended.sequence, "the ending is narrated after it is recorded");
+    });
+
+    await t.test("narration leaves out an arrival elsewhere that a threat caused during the turn", async () => {
+      const seed = placed(outageWorld("arrival-elsewhere"), { priya: "gateway" });
+      seed.characters = seed.characters.map((character) => (
+        character.id === "priya" ? { ...character, inventory: { "admin-token": 1 } } : character
+      ));
+      seed.threats = seed.threats!.map((threat) => (threat.id === "vp-joins" ? { ...threat, at: 60 } : threat));
+      const { id } = await engine.createWorld(seed);
+      const { provider, runner } = scripted([
+        act(null, { type: "attempt_check", challengeId: "rotate-certificate", approach: "Issue a new certificate and reload" }),
+        { role: "dm", output: { success: true, reason: "The reload takes." } },
+        narrate("The gateway reloads."),
+      ], outageCast);
+      assert.equal((await runner.run(id, { maxTurns: 5 })).stopReason, "ended");
+      const [check] = await eventsOf(id, "check_resolved");
+      const [entered] = await eventsOf(id, "character_entered");
+      const [narration] = await eventsOf(id, "narration");
+      assert.ok(check && entered && narration?.data.type === "narration");
+      assert.deepEqual(narration.data.aboutSequences, [check.sequence]);
+      assert.deepEqual(await engine.getPerceivers(id, narration.sequence), ["priya"], "only the one at the gateway hears it");
+      assert.doesNotMatch(provider.requests.at(-1)!.prompt, /Sloane/);
     });
   } finally {
     await engine.close();

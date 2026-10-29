@@ -30,6 +30,9 @@ Commands:
   unmute CHARACTER.. Let the scheduler choose them again; unmute --all for everyone
   steer TEXT         Ask everyone to reconsider, outside the story; --to CHARACTER for one.
                      Each sees it on their next turn; it changes nothing in the world
+  enter CHARACTER --at PLACE
+                     Bring someone away from the scene into it; --text says how it looks
+  exit CHARACTER     Send someone in the scene away from it; --text says how it looks
   run --turns N      Run up to N turns; limit spending with --max-calls N, --max-tokens N,
                      --max-cost CREDITS
   show               Admin view of the world (never sent to agents)
@@ -68,6 +71,8 @@ function parseCommandLine() {
         last: { type: "string" },
         search: { type: "string" },
         to: { type: "string" },
+        at: { type: "string" },
+        text: { type: "string" },
         full: { type: "boolean" },
         all: { type: "boolean" },
         help: { type: "boolean", short: "h" },
@@ -225,6 +230,7 @@ async function show(engine: AdventureEngine, worldId: string): Promise<void> {
         ...(character.npc ? ["supporting"] : []),
         ...(Object.hasOwn(personas, character.id) ? [] : ["no agent"]),
         ...(muted.has(character.id) ? ["muted"] : []),
+        ...(character.away ? ["away from the scene"] : []),
       ];
       const tag = tags.length > 0 ? ` [${tags.join(", ")}]` : "";
       const health = rules.health === null ? "" : `${rules.health} ${character.hp}/${character.maxHp}, `;
@@ -250,7 +256,11 @@ async function show(engine: AdventureEngine, worldId: string): Promise<void> {
     const when = threat.status === "waiting" ? `${threat.delaySeconds! / 60} min after a consequence arms it` : `at ${formatClock(threat.at!)}`;
     const where = threat.locationIds?.map((id) => place(state, id)).join(", ") ?? "everywhere";
     const damage = threat.damage ? `, ${threat.damage} damage` : "";
-    console.log(`  ${threat.name} (${threat.id}): ${threat.status}, ${when}, strikes ${where}${damage}`);
+    const staging = [
+      ...(threat.enters ?? []).map((entry) => `brings in ${entry.characterId} at ${place(state, entry.locationId)}`),
+      ...(threat.exits ?? []).map((characterId) => `sends away ${characterId}`),
+    ];
+    console.log(`  ${threat.name} (${threat.id}): ${threat.status}, ${when}, strikes ${where}${damage}${staging.map((entry) => `, ${entry}`).join("")}`);
   }
   const endings = state.endings ?? [];
   if (endings.length > 0) console.log("\nEndings:");
@@ -265,6 +275,19 @@ async function steer(engine: AdventureEngine, worldId: string, words: string[], 
   if (!text) throw new UsageError("steer needs the request, for example: steer \"Find a way that avoids the channel\"");
   await direct(engine, worldId, { type: "steer", text, ...(targetId === undefined ? {} : { targetId }) });
   console.log(`Steering recorded for ${targetId ?? "everyone"}. Each sees it on their next turn; no agent remembers it.`);
+}
+
+/** Brings someone into the scene, or sends them away, as the director. */
+async function stage(engine: AdventureEngine, worldId: string, entering: boolean, characterId: string, at: string | undefined, text: string | undefined): Promise<void> {
+  const how = text?.trim() ? { text: text.trim() } : {};
+  if (entering) {
+    if (!at) throw new UsageError("enter needs the place they arrive at, for example: enter wen --at war-room");
+    await direct(engine, worldId, { type: "enter", characterId, locationId: at, ...how });
+  } else {
+    await direct(engine, worldId, { type: "exit", characterId, ...how });
+  }
+  const state = await engine.getWorld(worldId);
+  console.log(entering ? `${characterId} is now at ${place(state, at!)}.` : `${characterId} has left the scene.`);
 }
 
 async function transcript(engine: AdventureEngine, worldId: string, last: number): Promise<void> {
@@ -383,7 +406,7 @@ async function main(): Promise<void> {
     return;
   }
   const known = [
-    "init", "step", "cue", "mute", "unmute", "steer", "run", "show", "transcript", "view", "memory", "traces", "report",
+    "init", "step", "cue", "mute", "unmute", "steer", "enter", "exit", "run", "show", "transcript", "view", "memory", "traces", "report",
     "rehearse", "models",
   ];
   if (!known.includes(command)) throw new UsageError(`Unknown command: ${command}\n\n${USAGE}`);
@@ -401,6 +424,7 @@ async function main(): Promise<void> {
   };
   const last = positiveInteger(values.last, "last", command === "traces" ? 10 : 40)!;
   if (command === "cue" && rest.length !== 1) throw new UsageError("cue needs exactly one character ID");
+  if ((command === "enter" || command === "exit") && rest.length !== 1) throw new UsageError(`${command} needs exactly one character ID`);
   if (command === "unmute" && rest.length === 0 && !values.all) throw new UsageError("unmute needs character IDs, or --all");
   // The API key is checked before the database is touched; the models come from the world's setup unless --model overrides them.
   const playing = command === "step" || command === "run" || command === "cue";
@@ -469,6 +493,10 @@ async function main(): Promise<void> {
         break;
       case "steer":
         await steer(engine, worldId, rest, values.to);
+        break;
+      case "enter":
+      case "exit":
+        await stage(engine, worldId, command === "enter", rest[0]!, values.at, values.text);
         break;
       case "traces":
         await traces(engine, worldId, last, values.full ?? false);

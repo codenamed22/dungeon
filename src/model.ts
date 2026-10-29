@@ -7,7 +7,7 @@ import { z } from "zod";
  */
 export const EVENT_FORMAT = 2;
 export const MAX_WAIT_SECONDS = 3600;
-export const MAX_SPEECH_LENGTH = 500;
+export const MAX_SPEECH_LENGTH = 700;
 export const MAX_NARRATION_LENGTH = 1000;
 export const MAX_INTENT_LENGTH = 200;
 export const MAX_REASON_LENGTH = 300;
@@ -112,6 +112,11 @@ export const characterSchema = z.strictObject({
   inventory: z.record(id, positiveCount),
   /** Voiced by the DM through NPC turns instead of taking character turns. */
   npc: z.boolean().optional(),
+  /**
+   * Away from the scene: neither perceives nor is perceived, and takes no turns,
+   * until something brings them in. `locationId` is where they were, or would appear.
+   */
+  away: z.literal(true).optional(),
   /** Goals and commitments, in the order adopted; only the character perceives them. */
   goals: z.array(goalSchema).max(MAX_GOALS).optional(),
 });
@@ -163,6 +168,9 @@ const threatSchema = z.strictObject({
   damage: positiveCount.max(100).optional(),
   lockRoutes: z.array(routeRef).min(1).max(10).optional(),
   unlockRoutes: z.array(routeRef).min(1).max(10).optional(),
+  /** Characters it brings into the scene, each at a place, and characters it sends away. */
+  enters: z.array(z.strictObject({ characterId: id, locationId: id })).min(1).max(10).optional(),
+  exits: z.array(id).min(1).max(10).optional(),
   status: z.enum(["armed", "waiting", "fired", "disarmed"]),
   at: positiveCount.optional(),
   delaySeconds: positiveCount.max(86_400).optional(),
@@ -248,6 +256,12 @@ export const characterActionSchema = z.discriminatedUnion("type", [
 export type CharacterAction = z.infer<typeof characterActionSchema>;
 
 /**
+ * Who a new check (if it succeeds) or an automatic success brings into the scene
+ * at the actor's place, and which supporting character there it sends away.
+ */
+const staging = { bringsIn: id.optional(), sendsOut: id.optional() };
+
+/**
  * The DM's ruling on an attempt: the same task as an existing challenge, a new
  * check within the world's limits, or an automatic success. An impossible
  * intention never reaches the engine; it goes back to the character.
@@ -262,8 +276,9 @@ export const rulingInputSchema = z.discriminatedUnion("decision", [
     failureDamage: count.max(100),
     seconds: taskSeconds,
     reason: reasonText,
+    ...staging,
   }),
-  z.strictObject({ decision: z.literal("automatic"), seconds: taskSeconds, reason: reasonText }),
+  z.strictObject({ decision: z.literal("automatic"), seconds: taskSeconds, reason: reasonText, ...staging }),
 ]);
 export type RulingInput = z.infer<typeof rulingInputSchema>;
 
@@ -315,7 +330,7 @@ export const commandSchema = z.discriminatedUnion("role", [
   }).refine((command) => command.judgment === undefined || command.action?.type === "attempt_check" || command.action?.type === "attempt", {
     message: "Only an attempt can be judged",
   }),
-  /** An NPC's turn, voiced by the DM: npc_say (speech) and npc_move (destination). */
+  /** An NPC's turn, voiced by the DM: npc_say (speech), npc_move (destination), and leaving the scene. */
   z.strictObject({
     role: z.literal("npc"),
     requestId: id,
@@ -324,10 +339,14 @@ export const commandSchema = z.discriminatedUnion("role", [
     speech: speechText.optional(),
     addresseeId: id.optional(),
     destinationId: id.optional(),
+    /** Leave the scene after speaking, until something brings them back. */
+    leave: z.literal(true).optional(),
   }).refine((command) => command.speech !== undefined || command.destinationId !== undefined, {
     message: "An NPC turn needs speech, a destination, or both",
   }).refine((command) => command.addresseeId === undefined || command.speech !== undefined, {
     message: "Only speech can be addressed to someone",
+  }).refine((command) => command.leave === undefined || (command.speech !== undefined && command.destinationId === undefined), {
+    message: "An NPC leaves the scene after speaking, and without walking anywhere",
   }),
   z.strictObject({
     role: z.literal("dm"),
@@ -369,6 +388,10 @@ export const commandSchema = z.discriminatedUnion("role", [
         sequence: positiveCount,
         text: retconText,
       }),
+      /** Brings someone away from the scene into it, at a place; `text` says how it looks. */
+      z.strictObject({ type: z.literal("enter"), characterId: id, locationId: id, text: introducedText.optional() }),
+      /** Sends someone in the scene away from it. */
+      z.strictObject({ type: z.literal("exit"), characterId: id, text: introducedText.optional() }),
     ]),
   }),
 ]);
@@ -477,6 +500,13 @@ export const eventSchema = z.strictObject({
       unlockedRoutes: z.array(routeRef).max(10),
     }),
     /**
+     * Someone coming into the scene, or leaving it, seen by those where it happens.
+     * The source says why: the director, the engine (a threat, or a ruling that
+     * brought them in or sent them away), or the DM (an NPC leaving on its turn).
+     */
+    z.strictObject({ type: z.literal("character_entered"), characterId: id, locationId: id, text: introducedText.optional() }),
+    z.strictObject({ type: z.literal("character_exited"), characterId: id, locationId: id, text: introducedText.optional() }),
+    /**
      * A director's retcon: the target did not happen as told. It reaches the
      * target's perceivers, whose agents no longer see the target. Compensating,
      * never an edit: the target stays in the log.
@@ -531,6 +561,7 @@ export const eventSchema = z.strictObject({
       challenge: challengeSchema.optional(),
       seconds: taskSeconds.optional(),
       reason: reasonText,
+      ...staging,
     }),
   ]),
 });
@@ -659,6 +690,16 @@ export function worldProblems(world: WorldSeed): WorldProblem[] {
       if (!locations.get(ref.fromId)?.routes.some((entry) => entry.destinationId === ref.destinationId)) {
         add("threat", `Unknown route changed by threat ${threat.id}`, threat.id);
       }
+    }
+    const characters = new Set(world.characters.map((character) => character.id));
+    const entering = (threat.enters ?? []).map((entry) => entry.characterId);
+    if (
+      (threat.enters ?? []).some((entry) => !characters.has(entry.characterId) || !locations.has(entry.locationId))
+      || (threat.exits ?? []).some((characterId) => !characters.has(characterId))
+      || new Set(entering).size !== entering.length || new Set(threat.exits ?? []).size !== (threat.exits ?? []).length
+      || entering.some((characterId) => threat.exits?.includes(characterId))
+    ) {
+      add("threat", `Threat ${threat.id} brings in or sends away an unknown character, at an unknown place, or someone twice`, threat.id);
     }
     if ((threat.status === "armed" && threat.at === undefined)
       || (threat.status === "waiting" && (threat.delaySeconds === undefined || threat.at !== undefined))) {

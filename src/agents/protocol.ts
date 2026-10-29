@@ -10,7 +10,7 @@ import type { CharacterAction, GoalInput, JudgmentInput, NoteInput, RulingInput,
 
 export const characterTurnSchema = z.strictObject({
   speech: z.string().nullable()
-    .describe("Words you say aloud this turn: one to three short sentences, or null to stay silent."),
+    .describe("Words you say aloud this turn, as many as the moment needs (under about 80 words), or null to stay silent."),
   to: z.string().nullable()
     .describe("The ID of the one person present you are speaking to, or null to speak to everyone present."),
   action: z.strictObject({
@@ -48,11 +48,13 @@ export const characterTurnSchema = z.strictObject({
 export type CharacterTurnOutput = z.input<typeof characterTurnSchema>;
 
 export const npcTurnSchema = z.strictObject({
-  speech: z.string().describe("What you say aloud: one to three short sentences."),
+  speech: z.string().describe("What you say aloud, as much as the moment needs (under about 80 words)."),
   to: z.string().nullable().describe("The ID of the one person you answer or speak to, or null to speak to everyone present."),
   move: z.string().nullable().describe("An exit ID to walk to after speaking, or null to stay."),
+  leave: z.boolean().default(false)
+    .describe("true to leave the scene after speaking, going somewhere nobody here follows; you come back only if something brings you."),
 });
-export type NpcTurnOutput = z.infer<typeof npcTurnSchema>;
+export type NpcTurnOutput = z.input<typeof npcTurnSchema>;
 
 export const rulingSchema = z.strictObject({
   decision: z.enum(["existing", "new", "automatic", "impossible"]),
@@ -63,8 +65,12 @@ export const rulingSchema = z.strictObject({
   failureDamage: z.number().int().nullable().describe("For new: damage a failure causes, or 0 if failing is harmless."),
   minutes: z.number().int().nullable().describe("For new and automatic: whole minutes the attempt takes."),
   reason: z.string().describe("One plain sentence, shown to the players, explaining the ruling. No numbers."),
+  bringsIn: z.string().nullable().default(null)
+    .describe("For new and automatic: the ID of someone away from the scene whom the attempt brings here, if it works; else null."),
+  sendsOut: z.string().nullable().default(null)
+    .describe("For new and automatic: the ID of a supporting character here whom the attempt gets to leave, if it works; else null."),
 });
-export type RulingOutput = z.infer<typeof rulingSchema>;
+export type RulingOutput = z.input<typeof rulingSchema>;
 
 /** A ruling in a judgment world, which also decides whether the attempt works. */
 export const judgedRulingSchema = rulingSchema.extend({
@@ -73,7 +79,7 @@ export const judgedRulingSchema = rulingSchema.extend({
   success: z.boolean().nullable().describe("For existing and new: whether the attempt works."),
   verdict: z.string().nullable().describe("For existing and new: one plain sentence, shown to everyone present, saying why it worked or did not."),
 });
-export type JudgedRulingOutput = z.infer<typeof judgedRulingSchema>;
+export type JudgedRulingOutput = z.input<typeof judgedRulingSchema>;
 
 /** The referee's judgment on an attempt at a listed challenge, in a judgment world. */
 export const judgmentSchema = z.strictObject({
@@ -107,6 +113,7 @@ export interface NpcParts {
   speech: string;
   addresseeId?: string;
   destinationId?: string;
+  leave?: true;
 }
 
 /**
@@ -212,7 +219,20 @@ export function toNpcParts(output: NpcTurnOutput): NpcParts {
   const speech = spoken(output.speech);
   if (!speech) throw new ProposalError("Say something: it is your turn to speak");
   const destinationId = output.move?.trim();
-  return { speech, ...addressee(output.to, speech), ...(destinationId ? { destinationId } : {}) };
+  if (output.leave === true && destinationId) throw new ProposalError("Either walk somewhere or leave the scene, not both: set move to null to leave");
+  return {
+    speech,
+    ...addressee(output.to, speech),
+    ...(destinationId ? { destinationId } : {}),
+    ...(output.leave === true ? { leave: true as const } : {}),
+  };
+}
+
+/** Whom a new or automatic ruling brings in or sends away, if it works. */
+function staging(output: RulingOutput): { bringsIn?: string; sendsOut?: string } {
+  const bringsIn = output.bringsIn?.trim();
+  const sendsOut = output.sendsOut?.trim();
+  return { ...(bringsIn ? { bringsIn } : {}), ...(sendsOut ? { sendsOut } : {}) };
 }
 
 export function toRuling(output: RulingOutput): Ruling {
@@ -225,7 +245,12 @@ export function toRuling(output: RulingOutput): Ruling {
     case "automatic":
       return {
         kind: "ruling",
-        ruling: { decision: "automatic", seconds: minutesToSeconds(required(output, "minutes", "automatic"), "automatic"), reason },
+        ruling: {
+          decision: "automatic",
+          seconds: minutesToSeconds(required(output, "minutes", "automatic"), "automatic"),
+          reason,
+          ...staging(output),
+        },
       };
     case "new": {
       const failureDamage = required(output, "failureDamage", "new");
@@ -240,6 +265,7 @@ export function toRuling(output: RulingOutput): Ruling {
           failureDamage,
           seconds: minutesToSeconds(required(output, "minutes", "new"), "new"),
           reason,
+          ...staging(output),
         },
       };
     }

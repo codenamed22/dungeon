@@ -32,7 +32,9 @@ export interface BeliefTopic {
 }
 
 /** Event types a belief can come from; see `beliefsOf`. */
-export const BELIEF_EVENTS = ["utterance", "character_moved", "item_transferred", "check_resolved", "belief_noted"] as const;
+export const BELIEF_EVENTS = [
+  "utterance", "character_moved", "character_entered", "character_exited", "item_transferred", "check_resolved", "belief_noted",
+] as const;
 
 const ATTRIBUTE_SYNONYMS = new Map([
   ["where", "location"],
@@ -69,6 +71,10 @@ function beliefsFrom(event: AdventureEvent, viewerId: string, state: WorldState)
       return data.actorId === viewerId ? [] : [observed(data.actorId, "location", place(data.locationId))];
     case "character_moved":
       return data.actorId === viewerId ? [] : [observed(data.actorId, "location", place(data.destinationId))];
+    case "character_entered":
+      return data.characterId === viewerId ? [] : [observed(data.characterId, "location", place(data.locationId))];
+    case "character_exited":
+      return data.characterId === viewerId ? [] : [observed(data.characterId, "location", "away; left the scene")];
     case "item_transferred":
       return [observed(data.itemId, "holder", person(data.recipientId))];
     case "check_resolved":
@@ -170,6 +176,9 @@ export function salience(event: AdventureEvent, viewerId: string, state: WorldSt
     case "item_transferred":
       return data.actorId === viewerId || data.recipientId === viewerId ? 2 : 1;
     case "ruling":
+      return 1;
+    case "character_entered":
+    case "character_exited":
       return 1;
     case "narration":
     case "character_moved":

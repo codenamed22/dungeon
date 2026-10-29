@@ -20,9 +20,9 @@ const ridgeCast: Cast = {
     + "bare ridge beyond, looking for the way into a buried aqueduct. A practical adventure of traps, weather, and the land itself.",
   narratorStyle: "Plain and brisk, present tense.",
   characters: {
-    mira: { summary: "A quick scout.", voice: "Brief and wry.", goals: ["Find the way into the aqueduct"], riskTolerance: "bold" },
-    bram: { summary: "A steady guard.", voice: "Slow and plain.", goals: ["Keep the others safe"], riskTolerance: "cautious" },
-    elowen: { summary: "A scholar of old works.", voice: "Precise.", goals: ["Learn what the ridge hides"], riskTolerance: "balanced" },
+    mira: { summary: "A quick scout.", knownAs: "the party's scout", voice: "Brief and wry.", goals: ["Find the way into the aqueduct"], riskTolerance: "bold" },
+    bram: { summary: "A steady guard.", knownAs: "the party's guard", voice: "Slow and plain.", goals: ["Keep the others safe"], riskTolerance: "cautious" },
+    elowen: { summary: "A scholar of old works.", knownAs: "a scholar traveling with the party", voice: "Precise.", goals: ["Learn what the ridge hides"], riskTolerance: "balanced" },
   },
 };
 

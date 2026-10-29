@@ -159,6 +159,14 @@ test("the creator refuses edits that would break the world, with reasons a perso
   refusal(() => upsertCharacter(draft, { id: "ada", hp: 20 }), /cannot have more than 12 hit points/);
   refusal(() => upsertCharacter(draft, { id: "ada", itemIds: ["lantern"] }), /no item with ID "lantern"/);
   refusal(() => setPersona(blankDraftWith("Cat"), { characterId: "cat", summary: "A cat." }), /needs a summary, a voice, and at least one goal/);
+
+  // Who someone is to the others survives other edits, and an empty string removes it.
+  const known = setPersona(draft, { characterId: "old-wick", knownAs: "the last keeper of the light" }).draft;
+  assert.equal(known.cast.npcs?.["old-wick"]?.knownAs, "the last keeper of the light");
+  const kept = setPersona(known, { characterId: "old-wick", voice: "Wheezing, kind." }).draft;
+  assert.equal(kept.cast.npcs?.["old-wick"]?.knownAs, "the last keeper of the light");
+  assert.equal(setPersona(kept, { characterId: "old-wick", knownAs: "" }).draft.cast.npcs?.["old-wick"]?.knownAs, undefined);
+  assert.equal(setPersona(draft, { characterId: "ada", knownAs: "Bram's sister" }).draft.cast.characters.ada?.knownAs, "Bram's sister");
   refusal(() => upsertChallenge(draft, { id: "force-the-hatch", opensRoutes: [{ fromId: "jetty", toId: "lamp-room" }] }), /no way from Jetty to Lamp Room/);
   refusal(() => upsertChallenge(draft, { id: "force-the-hatch", armsThreatIds: ["ships-sight-the-coast"] }), /already happens on its own clock/);
   refusal(() => upsertThreat(draft, { name: "Gulls", text: "Gulls scream." }), /Say when it happens/);

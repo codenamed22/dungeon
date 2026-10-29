@@ -56,7 +56,7 @@ test("runtime validation rejects malformed commands", () => {
     { ...base, action: { type: "attempt_check", challengeId: "gate-trap", difficulty: 1, success: true } },
     base,
     { ...base, speech: "   " },
-    { ...base, speech: "x".repeat(501) },
+    { ...base, speech: "x".repeat(701) },
     { ...base, role: undefined, action: { type: "wait", seconds: 60 } },
     { ...narrate, action: { type: "narrate", aboutSequences: [], text: "Nothing." } },
     { ...narrate, action: { type: "narrate", aboutSequences: [2], text: "x".repeat(1001) } },

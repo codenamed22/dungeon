@@ -175,6 +175,7 @@ export const nightMarketCast: Cast = {
   characters: {
     alex: {
       summary: "A graphic designer who is funny in groups and tongue-tied alone. Alex has been in love with Sam for a year.",
+      knownAs: "Sam's best friend",
       voice: "Quick and self-deprecating; jokes when nervous.",
       goals: ["Tell Sam how you feel before the night ends", "Find out why Sam has seemed far away lately"],
       riskTolerance: "cautious",
@@ -182,6 +183,7 @@ export const nightMarketCast: Cast = {
     sam: {
       summary: "A nurse, steady and kind, who has been offered a job in Lisbon and must answer by Monday. Sam has not told Alex, "
         + "because Alex is the reason Sam might say no.",
+      knownAs: "Alex's best friend, a nurse",
       voice: "Warm, direct, a little dry; goes quiet when something matters.",
       goals: ["Tell Alex about Lisbon yourself, before someone else does", "Work out whether there is a reason to stay"],
       riskTolerance: "balanced",
@@ -190,6 +192,7 @@ export const nightMarketCast: Cast = {
   npcs: {
     mei: {
       summary: "Runs the dumpling stall at the end of the row and has known Sam since school.",
+      knownAs: "runs the dumpling stall, and has known Sam since school",
       voice: "Brisk and teasing, with a soft spot she hides badly.",
       knowledge: [
         "Sam has been offered a job in Lisbon and must answer by Monday",
@@ -200,6 +203,7 @@ export const nightMarketCast: Cast = {
     },
     jordan: {
       summary: "Sam's old flatmate: loud, generous, and always arranging something.",
+      knownAs: "Sam's old flatmate",
       voice: "Enthusiastic, a bit too loud, full of plans.",
       knowledge: [
         "Sam is moving to Lisbon: Sam mentioned the offer, and you assume it is settled",

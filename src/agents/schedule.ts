@@ -1,5 +1,5 @@
 import type { AdventureEvent, WorldState } from "../model.ts";
-import { actorOf, isMental, isNpc } from "../rules.ts";
+import { actorOf, inScene, isMental, isNpc } from "../rules.ts";
 import type { Pace } from "./prompts.ts";
 
 /** One actor's turn: the events committed under one request ID. Narration is not a turn. */
@@ -37,8 +37,9 @@ export function turnHistory(events: AdventureEvent[], state: WorldState): TurnRe
 }
 
 /**
- * Chooses who acts next. Whoever the last turn addressed answers, if they can,
- * unless another agent has already waited a full round. Otherwise an NPC whose
+ * Chooses who acts next. Whoever the last turn addressed answers, if they can
+ * and the speaker is still there to hear it, unless another agent has already
+ * waited a full round. Otherwise an NPC whose
  * agenda is due speaks up, and failing that the agent who has waited longest
  * acts, ties going to world order, which is round-robin when nobody is
  * addressed. NPCs act only when addressed or due, never twice running.
@@ -46,19 +47,21 @@ export function turnHistory(events: AdventureEvent[], state: WorldState): TurnRe
  * @param agents conscious characters with a persona, in world order
  * @param npcs conscious NPCs with a persona
  * @param due NPCs whose agenda is due (see `dueAgendas`)
+ * @param together whether two characters are in the same place now
  */
 export function chooseNextActor(
   turns: TurnRecord[],
   agents: string[],
   npcs: ReadonlySet<string>,
   due: readonly string[] = [],
+  together: (a: string, b: string) => boolean = () => true,
 ): string | null {
   if (agents.length === 0) return null;
   const waited = (id: string) => turns.length - 1 - turns.findLastIndex((turn) => turn.actorId === id);
   const last = turns.at(-1);
   const addressed = last?.addresseeId;
   let starving = false;
-  if (last && addressed && addressed !== last.actorId && (agents.includes(addressed) || npcs.has(addressed))) {
+  if (last && addressed && addressed !== last.actorId && (agents.includes(addressed) || npcs.has(addressed)) && together(last.actorId, addressed)) {
     starving = agents.some((id) => id !== addressed && id !== last.actorId && waited(id) >= agents.length);
     if (!starving) return addressed;
   }
@@ -69,16 +72,24 @@ export function chooseNextActor(
   return next;
 }
 
+/** Whether two characters are in the scene, in the same place, in this state. */
+export function togetherIn(state: WorldState): (a: string, b: string) => boolean {
+  const place = new Map(state.characters.filter(inScene).map((character) => [character.id, character.locationId]));
+  return (a, b) => place.get(a) !== undefined && place.get(a) === place.get(b);
+}
+
 /**
  * NPCs whose agenda is due, in world order: a conscious NPC with an agenda
  * speaks up once `everySeconds` of in-world time have passed since its last
- * turn (or since the start), provided a party member is there to hear it. Time
+ * turn (or since the start), provided it and a party member are in the scene, together. Time
  * must pass between its turns, so an NPC cannot drive itself.
  */
 export function dueAgendas(turns: TurnRecord[], state: WorldState, agendas: ReadonlyMap<string, number>): string[] {
   return state.characters
-    .filter((npc) => npc.npc && npc.hp > 0 && agendas.has(npc.id))
-    .filter((npc) => state.characters.some((other) => !other.npc && other.hp > 0 && other.locationId === npc.locationId))
+    .filter((npc) => npc.npc && npc.hp > 0 && inScene(npc) && agendas.has(npc.id))
+    .filter((npc) => state.characters.some((other) => (
+      !other.npc && other.hp > 0 && inScene(other) && other.locationId === npc.locationId
+    )))
     .filter((npc) => state.elapsedSeconds - (turns.findLast((turn) => turn.actorId === npc.id)?.endedAt ?? 0) >= agendas.get(npc.id)!)
     .map((npc) => npc.id);
 }

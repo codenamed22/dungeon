@@ -185,6 +185,26 @@ test("web director integration", {
       assert.equal((await call("GET", "/api/worlds/directed/report")).body.steeringRequests, 1);
     });
 
+    await t.test("the director brings characters in and sends them away, seen only where it happens", async () => {
+      await create("staged");
+      const away = await call("POST", "/api/worlds/staged/exit", { characterId: "bram", text: "Bram goes back for the mule." });
+      assert.equal(away.status, 201);
+      assert.equal((await call("POST", "/api/worlds/staged/exit", { characterId: "bram" })).status, 422);
+      assert.equal((await call("POST", "/api/worlds/staged/enter", { characterId: "bram", locationId: "sewer" })).status, 422);
+      assert.equal((await call("POST", "/api/worlds/staged/enter", { characterId: "ghost", locationId: "mouth" })).status, 422);
+      assert.equal((await call("POST", "/api/worlds/staged/enter", { characterId: "bram" })).status, 400);
+      assert.equal((await call("POST", "/api/worlds/staged/enter", { characterId: "bram", locationId: "mouth" })).status, 201);
+      const events = (await call("GET", "/api/worlds/staged/events")).body as { type: string; perceivers: string[]; line: string }[];
+      assert.deepEqual(events.slice(1).map((event) => [event.type, event.perceivers]), [
+        ["character_exited", ["bram", "mira", "tamsin"]], ["character_entered", ["bram", "elowen"]],
+      ]);
+      assert.match(events[1]!.line, /Sent away by the director: Bram goes back for the mule\. Bram has left the scene\./);
+      const world = (await call("GET", "/api/worlds/staged")).body.world as { characters: { id: string; locationId: string; away?: true }[] };
+      const bram = world.characters.find((character) => character.id === "bram");
+      assert.equal(bram?.locationId, "mouth");
+      assert.equal(bram?.away, undefined);
+    });
+
     await t.test("a retcon withdraws words from the agents who heard them, with a correction, and leaves the log intact", async () => {
       await create("retconned");
       assert.equal((await call("POST", "/api/worlds/retconned/rehearse", {})).status, 202);

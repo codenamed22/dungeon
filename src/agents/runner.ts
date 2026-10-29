@@ -6,12 +6,12 @@ import { EngineError, MAX_NARRATION_LENGTH, rulesOf } from "../model.ts";
 import type { AdventureEvent, Command, JudgmentInput, RulingInput, WorldState } from "../model.ts";
 import { BELIEF_EVENTS, beliefsOf, rankRecollections, recallQuery } from "../memory.ts";
 import { availableActions, perceive } from "../perception.ts";
-import { attemptProblem, checkRuling, isNarratable, isNpc, MENTAL_EVENTS, PRIVATE_EVENTS } from "../rules.ts";
+import { attemptProblem, checkRuling, inScene, isNarratable, isNpc, MENTAL_EVENTS, PRIVATE_EVENTS } from "../rules.ts";
 import {
   beliefLines, describeEvent, eventLine, goalLines, NO_DIRECTION, renderCharacterPrompt, renderJudgingPrompt,
   renderNarrationPrompt, renderNpcPrompt, renderRulingPrompt,
 } from "./context.ts";
-import type { JudgedAttempt, MemoryView, NpcTurnReason } from "./context.ts";
+import type { JudgedAttempt, MemoryView, NpcTurnReason, Said } from "./context.ts";
 import {
   characterSystemPrompt, frameOf, judgeSystemPrompt, narratorSystemPrompt, npcSystemPrompt, PROMPT_VERSION, refereeSystemPrompt,
 } from "./prompts.ts";
@@ -24,7 +24,7 @@ import type { Ruling } from "./protocol.ts";
 import { ProviderError } from "./provider.ts";
 import type { AgentRole, ModelProvider, ModelRequest, ModelUsage } from "./provider.ts";
 import {
-  chooseNextActor, dueAgendas, lastCharacterTurn, pacePolicy, pendingSteering, turnDirection, turnHistory, turnsWithoutAction,
+  chooseNextActor, dueAgendas, lastCharacterTurn, pacePolicy, pendingSteering, togetherIn, turnDirection, turnHistory, turnsWithoutAction,
 } from "./schedule.ts";
 import type { Direction, StallPolicy, TurnRecord } from "./schedule.ts";
 
@@ -342,7 +342,24 @@ export async function buildNpcPrompt(
   steering: string[] = [],
 ): Promise<string> {
   const { recent, memory } = await recallContext(engine, worldId, state, npcId, settings);
-  return renderNpcPrompt(perceive(state, npcId), recent, feedback, reason, memory, steering);
+  return renderNpcPrompt(perceive(state, npcId), recent, feedback, reason, memory, steering, await failedSince(engine, worldId, state, npcId));
+}
+
+/**
+ * Attempts that failed where an NPC could see them since it last spoke, as
+ * lines for its prompt: a failed attempt to get something from it means it did
+ * not give it, so its next words must not hand it over.
+ */
+async function failedSince(engine: AdventureEngine, worldId: string, state: WorldState, npcId: string): Promise<string[]> {
+  const perceived = await engine.getPerceivedEvents(worldId, npcId, 30, { types: ["utterance", "check_resolved"] });
+  const spoke = perceived.findLast((event) => event.data.type === "utterance" && event.data.actorId === npcId)?.sequence ?? 0;
+  return perceived.flatMap((event) => {
+    const data = event.data;
+    if (event.sequence <= spoke || data.type !== "check_resolved" || data.success) return [];
+    const who = state.characters.find((character) => character.id === data.actorId)?.name ?? data.actorId;
+    const challenge = state.challenges.find((entry) => entry.id === data.challengeId)?.name ?? data.challengeId;
+    return [`- ${who} tried "${challenge}", and it didn't work.${data.reason === undefined ? "" : ` The referee: ${data.reason}`}`];
+  });
 }
 
 /**
@@ -408,7 +425,9 @@ export class TurnRunner {
         if (context.lease.lost) return stop("lease_lost");
         if (context.signal.aborted) return stop("paused");
         const state = await this.engine.getWorld(worldId);
-        if (state.endedWith !== undefined) return stop("ended");
+        // An ending whose narration failed gets another try before the run stops.
+        const owed = this.settings.narrate && (await this.pendingNarration(worldId, state)).length > 0;
+        if (state.endedWith !== undefined && !owed) return stop("ended");
         const agents = this.activeAgents(state);
         if (agents.length === 0) return stop("no_active_characters");
         const muted = new Set(await this.engine.getMuted(worldId));
@@ -463,7 +482,7 @@ export class TurnRunner {
     if (state.endedWith !== undefined) throw new EngineError("INVALID_INPUT", "The story has ended; nobody takes another turn");
     const able = character.npc ? this.activeNpcs(state) : this.activeAgents(state);
     if (!able.some((entry) => entry.id === actorId)) {
-      const reason = character.hp === 0 ? "is incapacitated" : "has no persona in the cast";
+      const reason = character.hp === 0 ? "is incapacitated" : !inScene(character) ? "is away from the scene" : "has no persona in the cast";
       throw new EngineError("INVALID_INPUT", `${actorId} cannot take a turn: ${actorId} ${reason}`);
     }
   }
@@ -492,30 +511,34 @@ export class TurnRunner {
     const next = cue === undefined ? await this.nextActor(worldId, state, turns) : { id: cue, npc: isNpc(state, cue) };
     if (!next) return;
     // The scheduler picks an NPC when spoken to or when its agenda is due; a cued NPC may be neither.
-    const reason: NpcTurnReason = turns.at(-1)?.addresseeId === next.id ? "addressed" : cue === undefined ? "agenda" : "cued";
+    const last = turns.at(-1);
+    const addressed = last?.addresseeId === next.id && togetherIn(state)(last.actorId, next.id);
+    const reason: NpcTurnReason = addressed ? "addressed" : cue === undefined ? "agenda" : "cued";
     const turn = next.npc
       ? await this.npcTurn(worldId, state, next.id, context, reason, pendingSteering(events, next.id))
       : await this.characterTurn(worldId, state, next.id, context, turnDirection(turns, events, next.id, this.settings));
     record(turn);
     // NPC turns are not narrated; a paused step leaves narration for the next one.
     if (turn.kind !== "turn" || next.npc || !this.settings.narrate || context.signal.aborted) return;
-    const actions = turn.events.filter((event) => isNarratable(event.data.type));
+    const actions = await this.narratable(worldId, turn.events, turn.actorId);
     if (actions.length > 0) {
       record(await this.narrate(worldId, await this.engine.getWorld(worldId), actions, context));
     }
   }
 
-  /** Conscious characters with a persona, in world order. */
+  /** Conscious characters in the scene with a persona, in world order. */
   private activeAgents(state: WorldState) {
     return state.characters.filter((character) => (
-      character.hp > 0 && !character.npc && Object.hasOwn(this.cast.characters, character.id)
+      character.hp > 0 && inScene(character) && !character.npc && Object.hasOwn(this.cast.characters, character.id)
     ));
   }
 
-  /** Conscious NPCs with a persona. */
+  /** Conscious NPCs in the scene with a persona. */
   private activeNpcs(state: WorldState) {
     const npcs = this.cast.npcs ?? {};
-    return state.characters.filter((character) => character.hp > 0 && character.npc && Object.hasOwn(npcs, character.id));
+    return state.characters.filter((character) => (
+      character.hp > 0 && inScene(character) && character.npc && Object.hasOwn(npcs, character.id)
+    ));
   }
 
   private async recentEvents(worldId: string, state: WorldState, count: number): Promise<AdventureEvent[]> {
@@ -532,7 +555,7 @@ export class TurnRunner {
     const agendas = new Map(Object.entries(this.cast.npcs ?? {}).flatMap(([id, persona]) => (
       persona.agenda && npcs.has(id) ? [[id, persona.agenda.everyMinutes * 60] as const] : []
     )));
-    const id = chooseNextActor(turns, unmuted(this.activeAgents(state)), npcs, dueAgendas(turns, state, agendas));
+    const id = chooseNextActor(turns, unmuted(this.activeAgents(state)), npcs, dueAgendas(turns, state, agendas), togetherIn(state));
     return id === null ? null : { id, npc: npcs.has(id) };
   }
 
@@ -544,9 +567,20 @@ export class TurnRunner {
     const narrated = new Set(recent.flatMap((event) => (
       event.data.type === "narration" ? event.data.aboutSequences : []
     )));
-    return recent.filter((event) => (
-      event.requestId === lastTurn.requestId && isNarratable(event.data.type) && !narrated.has(event.sequence)
-    ));
+    return this.narratable(worldId, recent.filter((event) => (
+      event.requestId === lastTurn.requestId && !narrated.has(event.sequence)
+    )), lastTurn.actorId);
+  }
+
+  /**
+   * The events of a turn to narrate: actions its actor perceived. A threat
+   * during the turn can bring someone in elsewhere, and one narration reaches
+   * everyone who perceived any of what it covers.
+   */
+  private async narratable(worldId: string, events: AdventureEvent[], actorId: string): Promise<AdventureEvent[]> {
+    const actions = events.filter((event) => isNarratable(event.data.type));
+    const perceivers = await Promise.all(actions.map((event) => this.engine.getPerceivers(worldId, event.sequence)));
+    return actions.filter((_, index) => perceivers[index]!.includes(actorId));
   }
 
   /** True when the latest `stallTurns` character turns were all speech. */
@@ -700,19 +734,21 @@ export class TurnRunner {
           throw new ProposalError(`Take an action this turn: nobody has acted for ${direction.stalled} turns`);
         }
         const command = { role: "character" as const, requestId, expectedRevision: state.revision, actorId, ...speech };
+        // Words in the same turn commit with the attempt, so the referee hears them here rather than among recent events.
+        const said = speech.speech === undefined ? undefined : { text: speech.speech, addresseeId: speech.addresseeId };
         const ended = (end: StepOutcome): End => ({ end, outcome: end.kind === "cancelled" ? "cancelled" : "ruling_failed" });
         if (action?.type === "attempt_check" && rulesOf(state).outcomes === "judgment") {
           // In a judgment world the referee decides the check, so only a check the engine allows reaches it.
           const problem = attemptProblem(state, actorId, action.challengeId);
           if (problem) return { redo: `The engine rejected your proposal: ${problem}`, outcome: "invalid_action" };
-          const judged = await this.judge(worldId, state, actorId, action, requestId, context);
+          const judged = await this.judge(worldId, state, actorId, action, requestId, context, said);
           if ("end" in judged) return ended(judged.end);
           if ("impossible" in judged) return { redo: judged.impossible, outcome: "invalid_output" };
           return { ...command, action, judgment: judged.value };
         }
         if (action?.type !== "attempt") return { ...command, ...(action ? { action } : {}) };
         if (!availableActions(state, actorId).intent) throw new ProposalError("attempt is not one of your available actions");
-        const ruled = await this.rule(worldId, state, actorId, action.intent, requestId, context);
+        const ruled = await this.rule(worldId, state, actorId, action.intent, requestId, context, said);
         if ("end" in ruled) return ended(ruled.end);
         if ("impossible" in ruled) {
           return { redo: `The referee ruled that "${action.intent}" cannot work: ${ruled.impossible}`, outcome: "ruled_impossible" };
@@ -782,6 +818,7 @@ export class TurnRunner {
     intent: string,
     turnId: string,
     context: Context,
+    said?: Said,
   ): Promise<Refereed<{ ruling: RulingInput; judgment?: JudgmentInput }>> {
     const rules = rulesOf(state);
     const judged = rules.outcomes === "judgment";
@@ -793,8 +830,8 @@ export class TurnRunner {
       noun: "ruling",
       success: "ruled",
       prompt: (feedback) => (judged
-        ? renderJudgingPrompt(state, actorId, { intent }, recent, discoveries, feedback)
-        : renderRulingPrompt(state, actorId, intent, recent, feedback)),
+        ? renderJudgingPrompt(state, actorId, { intent }, recent, discoveries, feedback, said)
+        : renderRulingPrompt(state, actorId, intent, recent, feedback, said)),
       decide: (output) => {
         const ruling: Ruling = judged
           ? toJudgedRuling(parseOutput(judgedRulingSchema, output, "ruling"), rules, state.rulings)
@@ -815,6 +852,7 @@ export class TurnRunner {
     attempt: Extract<JudgedAttempt, { challengeId: string }>,
     turnId: string,
     context: Context,
+    said?: Said,
   ): Promise<Refereed<JudgmentInput>> {
     const { recent, discoveries } = await this.refereeContext(worldId, state, actorId);
     return this.referee(worldId, actorId, turnId, context, {
@@ -823,7 +861,7 @@ export class TurnRunner {
       schemaName: "judge",
       noun: "judgment",
       success: "judged",
-      prompt: (feedback) => renderJudgingPrompt(state, actorId, attempt, recent, discoveries, feedback),
+      prompt: (feedback) => renderJudgingPrompt(state, actorId, attempt, recent, discoveries, feedback, said),
       decide: (output) => ({ value: toJudgment(parseOutput(judgmentSchema, output, "judgment")) }),
     });
   }
