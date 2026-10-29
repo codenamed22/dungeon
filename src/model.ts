@@ -618,6 +618,17 @@ export function parseInput<T>(schema: z.ZodType<T>, input: unknown): T {
   return parsed.data;
 }
 
+/** Where in the input a problem is, and what it is, in words a person can act on: "data.text is too long (at most 500 characters)". */
+export function readableIssues(error: z.ZodError, limit = 3): string {
+  const lines = error.issues.slice(0, limit).map((issue) => {
+    let reason = issue.message;
+    if (issue.code === "too_big") reason = issue.origin === "string" ? `is too long (at most ${String(issue.maximum)} characters)` : `must be at most ${String(issue.maximum)}`;
+    else if (issue.code === "too_small") reason = issue.origin === "string" && Number(issue.minimum) === 1 ? "can't be empty" : `must be at least ${String(issue.minimum)}`;
+    return issue.path.length === 0 ? reason : `${issue.path.join(".")} ${reason}`;
+  });
+  return error.issues.length > limit ? `${lines.join("; ")}; and ${error.issues.length - limit} more` : lines.join("; ");
+}
+
 export function parseStored<T>(schema: z.ZodType<T>, value: unknown): T {
   const parsed = schema.safeParse(value);
   if (!parsed.success) throw new EngineError("CORRUPT_STORAGE", parsed.error.message);

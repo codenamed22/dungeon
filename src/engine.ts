@@ -5,9 +5,11 @@ import {
   canonicalJson,
   commandSchema,
   EngineError,
+  eventSchema,
   EVENT_FORMAT,
   parseInput,
   parseStored,
+  readableIssues,
   validateWorld,
   worldSeedSchema,
   worldStateSchema,
@@ -17,7 +19,7 @@ import {
   actorOf, applyEvent, d20, isNarratable, MENTAL_EVENTS, Replayer, resolveCommand, retconAudience as audienceOfRetcon, retractionProblem, wipeProblem,
 } from "./rules.ts";
 import type { CommittedEvent, Evidence, Roll } from "./rules.ts";
-import { parseStoredEvent } from "./upcast.ts";
+import { parseStoredEvent, upcastEvent } from "./upcast.ts";
 
 export interface TurnResult {
   events: AdventureEvent[];
@@ -312,11 +314,10 @@ export class AdventureEngine {
     prepare: (state: WorldState) => { setup: unknown; muted: readonly string[] },
   ): Promise<WorldState> {
     const parsed = events.map((event, index) => {
-      try {
-        return parseStoredEvent(event);
-      } catch (problem) {
-        throw new EngineError("INVALID_INPUT", `Event ${index + 1} in the file isn't valid: ${problem instanceof Error ? problem.message : String(problem)}`);
-      }
+      const result = eventSchema.safeParse(upcastEvent(event));
+      if (result.success) return result.data;
+      const type = (event as { data?: { type?: unknown } } | null)?.data?.type;
+      throw new EngineError("INVALID_INPUT", `Event ${index + 1} in the file${typeof type === "string" ? ` (${type})` : ""} isn't valid: ${readableIssues(result.error)}`);
     });
     return this.transaction(async (client) => {
       let state: WorldState;
