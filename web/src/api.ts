@@ -1,5 +1,5 @@
 import type {
-  AdventureInfo, AgentPrompts, ChatEntry, CreatorEvent, Draft, DraftSummary, DraftView, EventView, MemoryReport, MetricsReport,
+  AdventureInfo, AgentPrompts, BuildStepId, ChatEntry, CreatorEvent, Draft, DraftSummary, DraftView, EventView, MemoryReport, MetricsReport,
   ModelInfo, RunStatus, Setup, TraceRecord, WorldSummary, WorldView,
 } from "./types.ts";
 
@@ -148,7 +148,7 @@ export const api = {
    * Refusals before it starts throw an ApiError; later failures arrive as an
    * error event. Aborting the signal stops it, keeping what it has done.
    */
-  async assist(draftId: string, body: { message: string; model?: string; expectedRevision: number }, onEvent: (event: AssistantEvent) => void, signal: AbortSignal): Promise<void> {
+  async assist(draftId: string, body: { message: string; model?: string; step?: BuildStepId; expectedRevision: number }, onEvent: (event: AssistantEvent) => void, signal: AbortSignal): Promise<void> {
     const response = await fetch(`/api${draftAt(draftId)}/assistant`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal,
     });

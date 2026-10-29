@@ -139,6 +139,17 @@ export function draftProblems(draft: Draft): DraftProblem[] {
       }
     }
   }
+  // An item a challenge gives matters only if a challenge needs it, or, where the referee judges, says it takes it.
+  const judged = rulesOf(seed).outcomes === "judgment";
+  const needed = (item: { id: string; name: string }) => seed.challenges.some((challenge) => challenge.requiresItemId === item.id
+    || (judged && challenge.criteria?.toLowerCase().includes(item.name.toLowerCase())));
+  for (const challenge of seed.challenges) {
+    const given = new Set((challenge.onSuccess?.grantItems ?? []).map((grant) => grant.itemId));
+    for (const item of seed.items.filter((candidate) => given.has(candidate.id) && !needed(candidate))) {
+      add("warning", "challenges", `"${challenge.name}" gives "${item.name}", but no challenge needs it, so having it changes nothing. `
+        + `If it should open or allow something, make a challenge need it${judged ? ", or name it in what one takes" : ""}.`, challenge.id);
+    }
+  }
   return problems;
 }
 

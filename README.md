@@ -177,7 +177,8 @@ What you can do:
   or everywhere), and **Endings** (closing text, set off by a challenge's
   success or failure or by a threat) complete it. Drafts save as you type. **Review** lists
   what stops the world being played, and what would improve it, each with a link
-  to where you fix it; then **Create world** makes it playable. A draft that
+  to where you fix it (such as a threat that nothing sets off, or an item a
+  challenge gives that no challenge needs); then **Create world** makes it playable. A draft that
   became a world no longer changes; copy it to make another version. Removing
   something removes every reference to it, and offers Undo.
 - **AI creator.** Drag the Creator tab in from the right edge, or tap it, and
@@ -202,6 +203,16 @@ What you can do:
   was and wasn't done.
   Pick any OpenRouter model that can call tools; the server's default is
   `DUNGEONS_CREATOR_MODEL` (see [Models](#models)).
+- **Step by step.** In an empty draft, the AI creator builds the world with you
+  in five steps (story, places, characters, challenges and threats, endings),
+  and stops after each one for your approval. Each step can use only its own
+  tools: the story step sets the title, premise, rules, and narrator, and
+  outlines the rest in its reply. Between steps, **Continue** runs the next
+  step, and anything you type changes the current one. **Build the rest at
+  once** finishes the world in one message, and **Leave step by step** goes
+  back to free conversation. A step stopped by Stop or a limit offers
+  **Finish**. Untick **Step by step** under the message box to build a new
+  world in one message.
 - **Premise.** Every AI is told the world's premise in its system prompt:
   setting, genre, tone, and stakes. The main characters read it too, so keep
   secrets and solutions out of it.
@@ -271,7 +282,7 @@ The server's HTTP API, under `/api`, is what the interface uses:
 | `GET /api/drafts`, `POST /api/drafts` | List drafts; create one, blank or from `{adventureId}`. |
 | `GET /api/drafts/:id`, `PUT /api/drafts/:id`, `DELETE /api/drafts/:id` | A draft with its problems and chat; replace it from `{draft, expectedRevision}`, refused with `STALE_REVISION` if it changed since. |
 | `POST /api/drafts/:id/publish` | Create the world from `{worldId, expectedRevision}`; a retry after a failure resumes. |
-| `POST /api/drafts/:id/assistant` | Run the AI creator on `{message, model?, expectedRevision}`, streamed as one JSON event per line. Other writes to the draft get `DRAFT_BUSY` until it finishes. |
+| `POST /api/drafts/:id/assistant` | Run the AI creator on `{message, model?, step?, expectedRevision}`, streamed as one JSON event per line. `step` (`story`, `places`, `characters`, `challenges`, or `endings`) runs that step of a guided build, with only its tools. Other writes to the draft get `DRAFT_BUSY` until it finishes. |
 | `GET /api/creator` | The AI creator's default model, and whether a key is set. |
 
 The server runs at most one run per world, and a CLI `step` or `run` on the same

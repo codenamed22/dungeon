@@ -6,6 +6,7 @@ export type { ModelSetup, Setup } from "../../src/agents/setup.ts";
 export type { DraftSummary, TraceRecord, WorldSummary } from "../../src/engine.ts";
 export type { CreatorEvent, CreatorUsage, ToolLine } from "../../src/creator/assistant.ts";
 export type { Draft, DraftProblem, DraftSection } from "../../src/creator/operations.ts";
+export type { BuildStepId } from "../../src/creator/steps.ts";
 export type { ChatEntry, DraftView } from "../../src/server/drafts.ts";
 export type { Character, WorldState } from "../../src/model.ts";
 export type { EventView, ModelInfo, WorldView } from "../../src/server/app.ts";

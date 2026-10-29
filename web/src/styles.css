@@ -402,6 +402,16 @@ dialog.dialog[open] { display: flex; flex-direction: column; animation: enter .1
 .change-card.undone { border-left-color: var(--line-strong); }
 .change-card .text-button { justify-self: start; }
 .change-card .row { justify-content: space-between; flex-wrap: wrap; }
+.step-label { align-self: flex-end; margin: 4px 0 -4px; color: var(--muted); font-size: 11.5px; }
+.step-card { display: grid; gap: 8px; padding: 10px 12px; border: 1px dashed var(--green-line); border-radius: 10px; background: var(--paper); font-size: 13px; }
+.step-card p { margin: 0; }
+.step-card .row { flex-wrap: wrap; gap: 6px 12px; }
+.step-track { display: flex; flex-wrap: wrap; gap: 4px 6px; list-style: none; margin: 0; padding: 0; }
+.step-track li { display: inline-flex; align-items: center; gap: 3px; padding: 2px 9px; border: 1px solid var(--line); border-radius: 12px; color: var(--muted); font-size: 12px; }
+.step-track li.done { border-color: var(--green-line); background: var(--green-soft); color: var(--green-dark); }
+.step-track li.next { border-color: var(--green); color: var(--green-dark); font-weight: 500; }
+.step-toggle { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+.step-toggle input { margin: 0; }
 .assistant-input { display: grid; gap: 6px; padding: 10px 12px; border-top: 1px solid var(--line); background: var(--paper); }
 .assistant-input .composer { display: flex; align-items: flex-end; gap: 8px; }
 .assistant-input textarea {

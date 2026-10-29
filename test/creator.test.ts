@@ -18,6 +18,8 @@ import {
   upsertCharacter, upsertEnding, upsertItem, upsertPlace, upsertThreat,
 } from "../src/creator/operations.ts";
 import type { Draft, OperationResult } from "../src/creator/operations.ts";
+import { buildStep, EVERY_STEP_TOOLS, nextBuildStep } from "../src/creator/steps.ts";
+import type { BuildStepId } from "../src/creator/steps.ts";
 import { creatorExamples, creatorToolDefinitions, runCreatorTool } from "../src/creator/tools.ts";
 import { AdventureEngine } from "../src/engine.ts";
 import { EngineError, validateWorld, worldProblems } from "../src/model.ts";
@@ -208,6 +210,27 @@ test("the creator refuses edits that would break the world, with reasons a perso
   assert.deepEqual(draftProblems(armed).map((problem) => problem.severity), ["warning"]);
 });
 
+test("an item a challenge gives warns until a challenge needs it, or a judged one names it", () => {
+  const warnings = (draft: Draft) => draftProblems(draft).filter((problem) => problem.message.includes("changes nothing"));
+  const keyed = build(
+    lighthouse(),
+    (draft) => upsertItem(draft, { name: "Brass Key" }),
+    (draft) => upsertChallenge(draft, { id: "force-the-hatch", grantsItemIds: ["brass-key"] }),
+  );
+  assert.deepEqual(warnings(keyed).map((problem) => [problem.section, problem.id, problem.message]), [[
+    "challenges", "force-the-hatch",
+    "\"Force the hatch\" gives \"Brass Key\", but no challenge needs it, so having it changes nothing. If it should open or allow something, make a challenge need it.",
+  ]]);
+  const used = upsertChallenge(keyed, { name: "Unlock the lamp", placeId: "lamp-room", ability: "dexterity", difficulty: "easy", minutes: 1, requiresItemId: "brass-key" }).draft;
+  assert.deepEqual(warnings(used), []);
+
+  // Where the referee judges, naming the item in what a challenge takes is enough.
+  const judged = setWorld(keyed, { outcomes: "judgment", statNames: null, healthName: null }).draft;
+  assert.match(warnings(judged)[0]!.message, /make a challenge need it, or name it in what one takes\.$/);
+  const named = upsertChallenge(judged, { id: "force-the-hatch", criteria: "Works if they turn the brass key in the hatch lock." }).draft;
+  assert.deepEqual(warnings(named), []);
+});
+
 function blankDraftWith(name: string): Draft {
   return build(blankDraft(), (draft) => upsertPlace(draft, { name: "Room" }), (draft) => upsertCharacter(draft, { name, placeId: "room" }));
 }
@@ -388,7 +411,7 @@ function chatWith(handler: Handler, settings: Partial<ChatSettings> = {}): OpenR
 
 async function creatorRun(
   handler: Handler,
-  options: { draft?: Draft; limits?: CreatorLimits; signal?: AbortSignal; history?: CreatorTurn[] } = {},
+  options: { draft?: Draft; limits?: CreatorLimits; signal?: AbortSignal; history?: CreatorTurn[]; step?: BuildStepId } = {},
 ) {
   const events: CreatorEvent[] = [];
   const saved: Draft[] = [];
@@ -401,6 +424,7 @@ async function creatorRun(
     save: async (draft) => saved.push(draft) + 1,
     ...(options.limits ? { limits: options.limits } : {}),
     ...(options.signal ? { signal: options.signal } : {}),
+    ...(options.step ? { step: options.step } : {}),
   });
   return { run, events, saved };
 }
@@ -478,6 +502,36 @@ test("a call that refers to something added later in the same reply runs again o
   assert.deepEqual(run.draft.seed.endings?.map((ending) => ending.id), ["soaked"]);
   const results = requests[1]!.messages.slice(-4).map((message: any) => [message.tool_call_id, JSON.parse(message.content).ok]);
   assert.deepEqual(results, [["a", true], ["b", true], ["c", true], ["d", false]], "the model hears how each call finally went, in order");
+});
+
+test("a guided build runs one step at a time, with only that step's tools", async () => {
+  const replies = [
+    completion({ tool_calls: [
+      toolCall("a", "upsert_place", { id: "hall", name: "Hall" }),
+      toolCall("b", "upsert_character", { name: "Ada", placeId: "hall" }),
+      toolCall("c", "connect_places", { fromId: "hall", toId: "yard", minutes: 1 }),
+      toolCall("d", "upsert_place", { id: "yard", name: "Yard" }),
+    ] }),
+    completion({ content: "Added the hall and the yard." }),
+  ];
+  const requests: Record<string, any>[] = [];
+  const { run } = await creatorRun(async (body) => {
+    requests.push(body);
+    return replies.shift()!;
+  }, { step: "places" });
+  const offered = requests[0]!.tools.map((tool: any) => tool.function.name).sort();
+  assert.deepEqual(offered, [...EVERY_STEP_TOOLS, ...buildStep("places").tools!].sort());
+  assert.match(requests[0]!.messages[0].content, /\n\nBuilding step by step: .+1\. Story, 2\. Places, 3\. Characters, 4\. Challenges, 5\. Endings.+\nThis is step 2 of 5, Places: Add the places/);
+  assert.match(requests[0]!.messages[0].content, /Problems that a later step will fix, such as no places or no challenges yet, are expected/);
+  assert.deepEqual(run.tools.map((line) => [line.name, line.ok]), [["upsert_place", true], ["upsert_character", false], ["connect_places", true], ["upsert_place", true]]);
+  assert.equal(run.tools[1]!.summary, `upsert_character isn't part of this step (Places); it uses ${[...EVERY_STEP_TOOLS, ...buildStep("places").tools!].join(", ")}.`);
+  assert.deepEqual(run.draft.seed.characters, []);
+
+  // The last step opens every tool, and a build outside the steps has no step section.
+  assert.equal(creatorToolDefinitions("endings").length, creatorToolDefinitions().length);
+  assert.equal(creatorToolDefinitions("story").length, EVERY_STEP_TOOLS.length);
+  assert.doesNotMatch(creatorSystemPrompt({}, []), /Building step by step/);
+  assert.deepEqual([nextBuildStep("story")?.id, nextBuildStep("endings")], ["places", null]);
 });
 
 test("the AI creator stops at its limits, on cancellation, and on provider errors, keeping what it saved", async () => {
@@ -715,6 +769,24 @@ test("drafts in the database, and publishing one as a world", {
       const edited = (await call("PUT", `/api/drafts/${draft.id}`, { draft: lighthouse(), expectedRevision: 4 })).body;
       assert.equal(edited.revision, 5);
       assert.equal((await call("PUT", `/api/drafts/${draft.id}`, { draft: draft.draft, expectedRevision: 4 })).status, 409);
+    });
+
+    await t.test("a guided build records each message's step, and only that step's tools are offered", async () => {
+      const draft = (await call("POST", "/api/drafts", {})).body;
+      const offered: string[][] = [];
+      handler = async (body) => {
+        offered.push(body.tools.map((tool: any) => tool.function.name));
+        return body.messages.at(-1).role === "tool"
+          ? completion({ content: "The story is set. Next: a hall and a yard." })
+          : completion({ tool_calls: [toolCall("1", "set_world", { premise: "A storm coast." })] });
+      };
+      const events = await collect(draft.id, { message: "A storm coast.", step: "story", expectedRevision: 1 });
+      const { entry } = events.at(-1)!;
+      assert.equal(entry.step, "story");
+      assert.deepEqual(offered[0]!.sort(), [...EVERY_STEP_TOOLS].sort());
+      assert.equal((await call("GET", `/api/drafts/${draft.id}`)).body.chat[0].step, "story");
+      const unknown = await call("POST", `/api/drafts/${draft.id}/assistant`, { message: "Go on.", step: "epilogue", expectedRevision: 2, model: "test/creator" });
+      assert.equal(unknown.status, 400);
     });
 
     await t.test("the AI creator refuses before streaming when it cannot start", async () => {

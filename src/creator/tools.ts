@@ -10,6 +10,8 @@ import {
   upsertEnding, upsertEndingInput, upsertItem, upsertItemInput, upsertPlace, upsertPlaceInput, upsertThreat, upsertThreatInput,
 } from "./operations.ts";
 import type { Draft, OperationResult } from "./operations.ts";
+import { buildStep, stepTools } from "./steps.ts";
+import type { BuildStepId } from "./steps.ts";
 
 // The world creator's operations as tools an AI can call. Each tool's result
 // says what changed and what still stops the world being played, so the model
@@ -93,15 +95,19 @@ function problemLines(draft: Draft): string[] {
   return draftProblems(draft).map((problem) => `${problem.severity}: ${problem.message}`);
 }
 
-let definitions: unknown[] | undefined;
+let definitions: { name: string; definition: unknown }[] | undefined;
 
-/** The tools in OpenRouter's (OpenAI's) function-calling format. */
-export function creatorToolDefinitions(): unknown[] {
+/** The tools in OpenRouter's (OpenAI's) function-calling format: all of them, or those a step of a guided build may use. */
+export function creatorToolDefinitions(step?: BuildStepId): unknown[] {
   definitions ??= tools.map((entry) => ({
-    type: "function",
-    function: { name: entry.name, description: entry.description, parameters: sanitizeSchema(z.toJSONSchema(entry.input)) },
+    name: entry.name,
+    definition: {
+      type: "function",
+      function: { name: entry.name, description: entry.description, parameters: sanitizeSchema(z.toJSONSchema(entry.input)) },
+    },
   }));
-  return definitions;
+  const allowed = step === undefined ? null : stepTools(step);
+  return definitions.filter((entry) => allowed === null || allowed.has(entry.name)).map((entry) => entry.definition);
 }
 
 export const CREATOR_TOOL_NAMES: readonly string[] = tools.map((entry) => entry.name);
@@ -117,13 +123,20 @@ export interface ToolOutcome {
   content: string;
 }
 
-/** Runs one tool call. Bad arguments and refused edits come back as failed outcomes for the model to correct. */
-export function runCreatorTool(draft: Draft, name: string, argumentsText: string): ToolOutcome {
+/**
+ * Runs one tool call. Bad arguments, refused edits, and a tool that belongs to
+ * another step of a guided build come back as failed outcomes for the model to correct.
+ */
+export function runCreatorTool(draft: Draft, name: string, argumentsText: string, step?: BuildStepId): ToolOutcome {
   const failed = (summary: string): ToolOutcome => ({
     draft, ok: false, summary, changed: false, content: JSON.stringify({ ok: false, error: summary }),
   });
   const entry = toolsByName.get(name);
   if (!entry) return failed(`There is no tool called "${name}".`);
+  const allowed = step === undefined ? null : stepTools(step);
+  if (allowed !== null && !allowed.has(name)) {
+    return failed(`${name} isn't part of this step (${buildStep(step!).label}); it uses ${[...allowed].join(", ")}.`);
+  }
   let args: unknown;
   try {
     args = argumentsText.trim() === "" ? {} : JSON.parse(argumentsText);

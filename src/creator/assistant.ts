@@ -6,6 +6,7 @@ import { draftProblems } from "./operations.ts";
 import type { Draft, DraftProblem } from "./operations.ts";
 import { creatorExamples, creatorToolDefinitions, runCreatorTool } from "./tools.ts";
 import type { ToolOutcome } from "./tools.ts";
+import type { BuildStepId } from "./steps.ts";
 
 // The AI creator's loop for one message from the director: the model calls
 // tools, sees their results, and calls more, until it replies or a limit stops
@@ -84,8 +85,8 @@ function draftStatus(draft: Draft): string {
     + `${count(errors, "error")} and ${count(problems.length - errors, "warning")}. Call get_draft to read it.`;
 }
 
-function conversation(draft: Draft, history: readonly CreatorTurn[], message: string): unknown[] {
-  const messages: unknown[] = [{ role: "system", content: creatorSystemPrompt(frameOf(draft.cast, draft.seed), creatorExamples()) }];
+function conversation(draft: Draft, history: readonly CreatorTurn[], message: string, step: BuildStepId | undefined): unknown[] {
+  const messages: unknown[] = [{ role: "system", content: creatorSystemPrompt(frameOf(draft.cast, draft.seed), creatorExamples(), step) }];
   for (const turn of history.slice(-HISTORY_TURNS)) {
     const changes = turn.tools.filter((line) => line.ok && !READS.has(line.name));
     const reply = [
@@ -104,6 +105,8 @@ export async function runCreator(options: {
   draft: Draft;
   history: readonly CreatorTurn[];
   message: string;
+  /** In a guided build, the step to run: only its tools are open. */
+  step?: BuildStepId;
   limits?: CreatorLimits;
   signal?: AbortSignal;
   onEvent(event: CreatorEvent): void;
@@ -112,8 +115,9 @@ export async function runCreator(options: {
 }): Promise<CreatorRun> {
   const { chat, signal, onEvent } = options;
   const limits = options.limits ?? CREATOR_LIMITS;
-  const messages = conversation(options.draft, options.history, options.message);
-  const definitions = creatorToolDefinitions();
+  const { step } = options;
+  const messages = conversation(options.draft, options.history, options.message, step);
+  const definitions = creatorToolDefinitions(step);
   const usage: CreatorUsage = { calls: 0, inputTokens: 0, outputTokens: 0, cost: 0 };
   const tools: ToolLine[] = [];
   // Text that comes with tool calls is progress, shown as it streams; the reply is what the model says once it is done.
@@ -164,7 +168,7 @@ export async function runCreator(options: {
           continue;
         }
         toolCalls += 1;
-        const outcome = runCreatorTool(draft, call.name, call.arguments);
+        const outcome = runCreatorTool(draft, call.name, call.arguments, step);
         draft = outcome.draft;
         outcomes.push(outcome);
       }
@@ -172,7 +176,7 @@ export async function runCreator(options: {
         progress = false;
         for (const [index, call] of answer.toolCalls.entries()) {
           if (outcomes[index]?.ok !== false) continue;
-          const again = runCreatorTool(draft, call.name, call.arguments);
+          const again = runCreatorTool(draft, call.name, call.arguments, step);
           if (!again.ok) continue;
           outcomes[index] = again;
           draft = again.draft;

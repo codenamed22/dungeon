@@ -320,6 +320,58 @@
     would show progress; the speed is the model's.
 
   Verified: typecheck, both builds, and all 216 tests pass.
+- **Building step by step: complete locally.** That slow first call led the
+  user to choose approvals between small steps over streaming one long reply.
+  In an empty draft, the AI creator now builds in five steps: story, places,
+  characters, challenges and threats, and endings. It stops after each one for
+  the director's approval.
+  - Each step offers the model only its own tools, plus reading, the world's
+    settings, and remove. The last step offers every tool.
+  - The step's task is in the system prompt, and a refused tool names the
+    step's tools.
+  - The story step writes only the settings, and outlines the rest in its
+    reply.
+  - Each chat entry records its step. The panel works out where the build is
+    from the last entry, so the steps survive a reload.
+  - Controls between steps:
+    - Continue runs the next step.
+    - A typed message changes the current step.
+    - "Build the rest at once" finishes in one unguided message.
+    - "Leave step by step" ends the guided build, and is remembered per draft.
+    - A step cut off early offers Finish.
+  - "Step by step" under the message box is on by default, and applies only
+    to an empty draft.
+
+  Verified 2026-10-29 with a scripted model, so no credits were spent:
+  - Headless Chrome drove each control at 1440 px and 390 px. Each request
+    carried its step's tools, and there were no console errors or sideways
+    scrolling.
+
+  A live guided build of the same heist on DeepSeek V4 Flash cost 0.027
+  credits. It sent the five steps plus one change, "add a security guard who
+  can be bribed".
+  - Every step stayed within its tools, no call failed, and the finished
+    world had no errors or warnings.
+  - The waits were 20, 38, 69, 13, 100, and 28 s. That is about 4½ minutes in
+    all, against 2¾ minutes and 0.019 credits in one message, because each
+    step resends the instructions and reads the draft. In exchange, the
+    director sees and approves each part as it comes.
+  - The challenges step still took one 91-second call to write 13 challenges
+    and threats.
+  - Gaps it showed, and what changed:
+    - Items that opened nothing. A lifted keycard and a bribed guard's badge
+      copy opened no door, since no challenge needed them, and no ending
+      needed the jewel. The single-message build had the same gap with its
+      keycard. A new warning names each item a challenge gives that no
+      challenge needs: "…so having it changes nothing. If it should open or
+      allow something, make a challenge need it". In a judged world, naming
+      the item in what a challenge takes also counts. *The Aqueduct*'s bronze
+      seal, a keepsake found with a clue, now shows this warning.
+    - The story step's reply called the errors about having no places or
+      characters "expected". The step instructions now say to leave problems
+      that a later step will fix out of the reply.
+
+  Verified: typecheck, both builds, and all 219 tests pass.
 - Development and tests use local PostgreSQL or a Neon development branch, not the
   `production` branch.
 

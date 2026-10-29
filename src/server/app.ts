@@ -13,6 +13,7 @@ import {
 import type { OpenRouterModel } from "../agents/openrouter.ts";
 import { frameOf, judgeSystemPrompt, narratorSystemPrompt, refereeSystemPrompt } from "../agents/prompts.ts";
 import { ProviderConfigError } from "../agents/provider.ts";
+import { BUILD_STEP_IDS } from "../creator/steps.ts";
 import { loadSetup, parseSetup, placeholderCast, resolvedModels } from "../agents/setup.ts";
 import type { Setup } from "../agents/setup.ts";
 import type { AdventureEngine } from "../engine.ts";
@@ -155,6 +156,7 @@ const bodies = {
   assistant: z.object({
     message: z.string().trim().min(1).max(16_000),
     model: z.string().max(200).optional(),
+    step: z.enum(BUILD_STEP_IDS).optional(),
     expectedRevision: z.number().int().positive(),
   }),
   run: z.object({
@@ -400,6 +402,7 @@ export function createApp(options: AppOptions): (request: IncomingMessage, respo
     try {
       const { entry, view } = await drafts.assist(draftId, {
         message: body.message,
+        step: body.step,
         expectedRevision: body.expectedRevision,
         chat,
         signal: controller.signal,

@@ -3,7 +3,8 @@ import type { KeyboardEvent } from "react";
 import { ArrowUp, Check, ChevronDown, CircleAlert, Sparkles, Square, Undo2, Wrench, X } from "lucide-react";
 import { api, ApiError, errorText } from "../api.ts";
 import type { AssistantEvent } from "../api.ts";
-import type { ChatEntry, CreatorUsage, Draft, ModelInfo, ToolLine } from "../types.ts";
+import type { BuildStepId, ChatEntry, CreatorUsage, Draft, ModelInfo, ToolLine } from "../types.ts";
+import { BUILD_STEPS, buildStep, nextBuildStep } from "../../../src/creator/steps.ts";
 import { NARROW, useDrag, useMedia, useOverlay, useStored } from "../ui/hooks.ts";
 import type { DraftEditor } from "./useDraft.ts";
 
@@ -20,6 +21,7 @@ const READS = new Set(["get_draft", "check_draft", "get_example"]);
 
 interface LiveRun {
   message: string;
+  step: BuildStepId | undefined;
   /** The draft before the run, which Undo puts back. */
   before: Draft;
   revisionBefore: number;
@@ -27,6 +29,11 @@ interface LiveRun {
   usage: CreatorUsage | null;
   model: string | null;
 }
+
+/** Nothing written yet, so a guided build can start. */
+const isEmpty = (draft: Draft) => draft.seed.locations.length === 0 && draft.seed.characters.length === 0 && !draft.cast.premise;
+
+const stepNumber = (id: BuildStepId) => BUILD_STEPS.findIndex((step) => step.id === id) + 1;
 
 const money = (cost: number) => (cost < 0.01 ? `$${cost.toFixed(4)}` : `$${cost.toFixed(2)}`);
 
@@ -54,6 +61,9 @@ export function AssistantPanel({ editor, draftId, launch }: { editor: DraftEdito
   const [undoing, setUndoing] = useState<string | null>(null);
   const [seenIntro, setSeenIntro] = useStored<"yes" | "no">("dungeons.creatorIntro", "no");
   const [chosenModel, setChosenModel] = useStored<string>("dungeons.creatorModel", "");
+  const [stepwise, setStepwise] = useStored<"yes" | "no">("dungeons.creatorStepwise", "yes");
+  /** The message after which the director left a guided build; kept, so a reload doesn't bring the steps back. */
+  const [leftAt, setLeftAt] = useStored<string>(`dungeons.creatorLeftAt.${draftId}`, "");
   const [picking, setPicking] = useState(false);
   const [server, setServer] = useState<{ model: string; keyConfigured: boolean } | null>(null);
   const controller = useRef<AbortController | null>(null);
@@ -63,6 +73,12 @@ export function AssistantPanel({ editor, draftId, launch }: { editor: DraftEdito
   const chat = view?.chat ?? [];
   const running = live !== null;
   const width = () => panel.current?.offsetWidth ?? 420;
+  const last = chat.at(-1);
+  /** A guided build in progress: the step the last message ran, until the last step or the director leaves. */
+  const guided = last?.step !== undefined && nextBuildStep(last.step) !== null && leftAt !== last.id ? last.step : null;
+  const empty = editor.draft !== null && editor.draft !== undefined && isEmpty(editor.draft);
+  /** The next message starts a guided build. */
+  const starting = guided === null && empty && stepwise === "yes";
 
   useEffect(() => {
     api.creator().then(setServer).catch(() => setServer(null));
@@ -141,9 +157,11 @@ export function AssistantPanel({ editor, draftId, launch }: { editor: DraftEdito
     await editor.reload();
   }
 
-  async function send(message: string) {
+  /** Sends a message: as the given step of a guided build, outside one (null), or as the panel's state implies. */
+  async function send(message: string, step?: BuildStepId | null) {
     const trimmed = message.trim();
     if (!trimmed || running || !editor.draft) return;
+    const runStep = step === undefined ? guided ?? (starting ? "story" : undefined) : step ?? undefined;
     setProblem(null);
     let saved;
     try {
@@ -152,7 +170,7 @@ export function AssistantPanel({ editor, draftId, launch }: { editor: DraftEdito
       setProblem(`Your last change isn't saved, so the AI creator can't start: ${errorText(error)}`);
       return;
     }
-    const run: LiveRun = { message: trimmed, before: saved.draft, revisionBefore: saved.revision, steps: [], usage: null, model: null };
+    const run: LiveRun = { message: trimmed, step: runStep, before: saved.draft, revisionBefore: saved.revision, steps: [], usage: null, model: null };
     setLive(run);
     setText("");
     editor.setAssisting(true);
@@ -190,7 +208,9 @@ export function AssistantPanel({ editor, draftId, launch }: { editor: DraftEdito
       }
     };
     try {
-      await api.assist(draftId, { message: trimmed, expectedRevision: saved.revision, ...(chosenModel ? { model: chosenModel } : {}) }, onEvent, abort.signal);
+      await api.assist(draftId, {
+        message: trimmed, expectedRevision: saved.revision, ...(chosenModel ? { model: chosenModel } : {}), ...(runStep ? { step: runStep } : {}),
+      }, onEvent, abort.signal);
     } catch (error) {
       if (error instanceof ApiError) {
         // Refused before it started: nothing changed, so the message goes back in the box.
@@ -277,7 +297,9 @@ export function AssistantPanel({ editor, draftId, launch }: { editor: DraftEdito
           <div className="assistant-log" ref={log} aria-live="polite">
             {chat.length === 0 && !live && (
               <div className="assistant-empty">
-                <p>Ask for a whole world, or one piece at a time. It can read everything in the draft.</p>
+                <p>{starting
+                  ? "Describe the world you want. It builds it with you in five steps (story, places, characters, challenges, endings) and stops for your approval after each."
+                  : "Ask for a whole world, or one piece at a time. It can read everything in the draft."}</p>
                 <div className="assistant-chips">
                   {SUGGESTIONS.map((suggestion) => (
                     <button key={suggestion} type="button" disabled={running || noKey} onClick={() => setText(suggestion)}>{suggestion}</button>
@@ -290,8 +312,19 @@ export function AssistantPanel({ editor, draftId, launch }: { editor: DraftEdito
                 undo={befores.has(entry.id) && !undone.has(entry.id) && view?.revision === entry.revisionAfter && !running ? () => void undo(entry) : null}
                 undone={undone.has(entry.id)} undoing={undoing === entry.id} />
             ))}
+            {guided && !live && (
+              <StepCard current={guided} disabled={noKey} unfinished={Boolean(last!.stopped || last!.error)}
+                onRetry={() => void send(`Finish step ${stepNumber(guided)}: ${buildStep(guided).label}.`, guided)}
+                onContinue={() => {
+                  const next = nextBuildStep(guided)!;
+                  void send(`Approved. On to step ${stepNumber(next.id)}: ${next.label}.`, next.id);
+                }}
+                onFinish={() => void send("Build the rest of the world, without stopping between steps.", null)}
+                onLeave={() => setLeftAt(last!.id)} />
+            )}
             {live && (
               <>
+                {live.step && <StepLabel step={live.step} />}
                 <p className="bubble user">{live.message}</p>
                 {live.steps.map((step, index) => (step.kind === "text"
                   ? <p key={index} className="bubble assistant">{step.text}</p>
@@ -307,7 +340,8 @@ export function AssistantPanel({ editor, draftId, launch }: { editor: DraftEdito
           {noKey && <p className="assistant-error">Set OPENROUTER_API_KEY in .env.local and restart the server to use the AI creator.</p>}
           <div className="composer">
             <textarea rows={Math.min(5, Math.max(1, text.split("\n").length))} value={text} maxLength={16000} onChange={(event) => setText(event.target.value)} onKeyDown={onKey}
-              placeholder={running ? "Working…" : "Ask the AI creator…"} aria-label="Message to the AI creator" disabled={running || noKey || seenIntro === "no"} />
+              placeholder={running ? "Working…" : guided ? `Or tell it what to change in ${buildStep(guided).label.toLowerCase()}…` : starting ? "Describe the world to build…" : "Ask the AI creator…"}
+              aria-label="Message to the AI creator" disabled={running || noKey || seenIntro === "no"} />
             {running ? (
               <button type="button" className="round-send" aria-label="Stop" title="Stop: it keeps what it has done so far" onClick={() => controller.current?.abort()}>
                 <Square size={14} fill="currentColor" />
@@ -320,12 +354,51 @@ export function AssistantPanel({ editor, draftId, launch }: { editor: DraftEdito
             <button type="button" onClick={() => setPicking((shown) => !shown)} aria-expanded={picking} title="Choose the model">
               {model} <ChevronDown size={11} />
             </button>
+            {empty && guided === null && !running && (
+              <label className="step-toggle" title="Build a new world in five steps, approving each">
+                <input type="checkbox" checked={stepwise === "yes"} onChange={(event) => setStepwise(event.target.checked ? "yes" : "no")} />
+                Step by step
+              </label>
+            )}
             <span className="grow" />
             <span>{spent === null ? (chat.length ? "cost not reported" : "") : `${money(spent)} spent here`}</span>
           </div>
         </form>
       </aside>
     </>
+  );
+}
+
+function StepLabel({ step }: { step: BuildStepId }) {
+  return <p className="step-label">Step {stepNumber(step)} of {BUILD_STEPS.length} · {buildStep(step).label}</p>;
+}
+
+/** Between the steps of a guided build: where it is, and the director's choice of what next. */
+function StepCard({ current, disabled, unfinished, onRetry, onContinue, onFinish, onLeave }: {
+  current: BuildStepId; disabled: boolean; unfinished: boolean; onRetry(): void; onContinue(): void; onFinish(): void; onLeave(): void;
+}) {
+  // An unfinished step is still the current one.
+  const done = stepNumber(current) - (unfinished ? 1 : 0);
+  const next = nextBuildStep(current)!;
+  return (
+    <div className="step-card">
+      <ol className="step-track" aria-label="Steps">
+        {BUILD_STEPS.map((step, index) => (
+          <li key={step.id} className={index < done ? "done" : index === done ? "next" : ""} aria-current={index === done ? "step" : undefined}>
+            {index < done && <Check size={11} />}{step.label}
+          </li>
+        ))}
+      </ol>
+      <p className="muted small">{unfinished
+        ? `It stopped before finishing the ${buildStep(current).label.toLowerCase()}. Finish it, or type what to change.`
+        : `Happy with the ${buildStep(current).label.toLowerCase()}? Continue, or type what to change.`}</p>
+      <div className="row">
+        {unfinished && <button type="button" className="primary small" disabled={disabled} onClick={onRetry}>Finish {buildStep(current).label.toLowerCase()}</button>}
+        <button type="button" className={`${unfinished ? "" : "primary "}small`} disabled={disabled} onClick={onContinue}>Continue: {next.label}</button>
+        <button type="button" className="text-button small" disabled={disabled} onClick={onFinish}>Build the rest at once</button>
+        <button type="button" className="text-button small" onClick={onLeave}>Leave step by step</button>
+      </div>
+    </div>
   );
 }
 
@@ -345,6 +418,7 @@ function Turn({ entry, undo, undone, undoing }: { entry: ChatEntry; undo: (() =>
   const changed = entry.revisionAfter !== entry.revisionBefore;
   return (
     <>
+      {entry.step && <StepLabel step={entry.step} />}
       <p className="bubble user">{entry.message}</p>
       {entry.reply && <p className="bubble assistant">{entry.reply}</p>}
       {entry.stopped && <p className="assistant-note"><Square size={11} /> {entry.stopped}</p>}

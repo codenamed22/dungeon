@@ -4,6 +4,7 @@ import { runCreator } from "../creator/assistant.ts";
 import type { ChatModel, CreatorEvent, CreatorLimits, CreatorUsage, ToolLine } from "../creator/assistant.ts";
 import { blankDraft, draftProblems, draftSchema, publishable, slugify } from "../creator/operations.ts";
 import type { Draft, DraftProblem } from "../creator/operations.ts";
+import type { BuildStepId } from "../creator/steps.ts";
 import type { AdventureEngine, DraftRecord, DraftSummary } from "../engine.ts";
 import { EngineError, parseInput } from "../model.ts";
 
@@ -24,6 +25,8 @@ export interface ChatEntry {
   revisionAfter: number;
   /** Why it stopped early, if it did. */
   stopped?: string;
+  /** The step of a guided build it ran, if any. */
+  step?: BuildStepId;
   error?: string;
 }
 
@@ -117,6 +120,7 @@ export class DraftService {
    */
   async assist(id: string, options: {
     message: string;
+    step?: BuildStepId | undefined;
     expectedRevision: number;
     chat: ChatModel;
     signal: AbortSignal;
@@ -139,6 +143,7 @@ export class DraftService {
         draft: parseInput(draftSchema, record.draft),
         history: chat,
         message: options.message,
+        ...(options.step === undefined ? {} : { step: options.step }),
         signal: options.signal,
         ...(options.limits ? { limits: options.limits } : {}),
         onEvent: options.onEvent,
@@ -159,6 +164,7 @@ export class DraftService {
         revisionAfter: revision,
         ...(run.stopped === undefined ? {} : { stopped: run.stopped }),
         ...(run.error === undefined ? {} : { error: run.error }),
+        ...(options.step === undefined ? {} : { step: options.step }),
       };
       const saved = await this.engine.updateDraft(id, revision, { chat: [...chat, entry].slice(-MAX_CHAT_ENTRIES) });
       release();
