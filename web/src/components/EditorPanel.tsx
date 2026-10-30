@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
-import { ArrowUp, ChevronDown, CircleAlert, Pause, Square, Undo2, WandSparkles, X } from "lucide-react";
+import { ArrowUp, ChevronDown, CircleAlert, Pause, Square, Trash2, Undo2, WandSparkles, X } from "lucide-react";
 import { api, ApiError, errorText } from "../api.ts";
 import type { EditorStreamEvent } from "../api.ts";
 import type { CreatorUsage, EditorEntry, EditorPass, ProposedChange, RunStatus, ToolLine, WorldView } from "../types.ts";
@@ -67,6 +67,7 @@ export function EditorPanel({ worldId, view, run, overlay, onWorld }: {
   const [problem, setProblem] = useState<string | null>(null);
   const [undone, setUndone] = useState<Set<string>>(() => new Set());
   const [undoing, setUndoing] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
   const [pausing, setPausing] = useState(false);
   const [chosenModel, setChosenModel] = useStored<string>("dungeons.editorModel", "");
   const [picking, setPicking] = useState(false);
@@ -223,6 +224,21 @@ export function EditorPanel({ worldId, view, run, overlay, onWorld }: {
     }
   }
 
+  async function deleteFrom(entry: EditorEntry) {
+    if (!window.confirm("Delete this message and all newer editor messages from chat history? Changes already made to the world will stay.")) return;
+    setDeleting(entry.id);
+    setProblem(null);
+    try {
+      const updated = await api.deleteEditorMessage(worldId, entry.id);
+      setChat(updated.chat);
+      setUndone((current) => new Set([...current].filter((id) => updated.chat.some((saved) => saved.id === id))));
+    } catch (error) {
+      setProblem(errorText(error));
+    } finally {
+      setDeleting(null);
+    }
+  }
+
   async function pause() {
     setPausing(true);
     try {
@@ -279,6 +295,7 @@ export function EditorPanel({ worldId, view, run, overlay, onWorld }: {
           return (
             <Turn key={entry.id} entry={entry} agentChange={agentChange} undone={undone.has(entry.id)} undoing={undoing === entry.id}
               undo={canUndo ? () => void undo(entry) : null}
+              deleteMessage={() => void deleteFrom(entry)} deleting={deleting === entry.id || working || playing || deleting !== null}
               pending={entry === pending && !live ? { disabled: blocked, onApprove: (chosen, note) => void send(fixMessage(entry.proposal!, chosen, note), "fix") } : null} />
           );
         })}
@@ -378,18 +395,25 @@ function ProposalCard({ changes, disabled, onApprove }: { changes: readonly Prop
   );
 }
 
-function Turn({ entry, agentChange, undo, undone, undoing, pending }: {
+function Turn({ entry, agentChange, undo, undone, undoing, deleteMessage, deleting, pending }: {
   entry: EditorEntry;
   agentChange: boolean;
   undo: (() => void) | null;
   undone: boolean;
   undoing: boolean;
+  deleteMessage(): void;
+  deleting: boolean;
   pending: { disabled: boolean; onApprove(chosen: number[], note: string): void } | null;
 }) {
   const [showSteps, setShowSteps] = useState(false);
   const changes = entry.tools.filter((line) => line.ok && !READS.has(line.name));
   const failed = entry.tools.filter((line) => !line.ok).length;
   const proposal = entry.proposal ?? [];
+  const deleteButton = (
+    <button type="button" className="small" disabled={deleting} onClick={deleteMessage} title="Delete this and all newer editor messages">
+      <Trash2 size={14} />{deleting ? "Deleting…" : "Delete from here"}
+    </button>
+  );
   return (
     <>
       <p className="bubble user">{entry.message}</p>
@@ -397,11 +421,17 @@ function Turn({ entry, agentChange, undo, undone, undoing, pending }: {
       {entry.stopped && <p className="assistant-note"><Square size={11} /> {entry.stopped}</p>}
       {entry.error && <p className="assistant-error"><CircleAlert size={14} /> {entry.error}</p>}
       {proposal.length > 0 && (pending ? <ProposalCard changes={proposal} {...pending} /> : <ProposalList changes={proposal} />)}
+      {entry.tools.length === 0 && (
+        <div className="change-card">
+          <div className="row"><strong>Message</strong>{deleteButton}</div>
+        </div>
+      )}
       {entry.tools.length > 0 && (
         <div className={`change-card ${undone ? "undone" : ""}`}>
           <div className="row">
             <strong>{undone ? "Agent changes undone" : changes.length ? `${changes.length} change${changes.length === 1 ? "" : "s"}` : entry.pass === "review" ? "Review" : "No changes"}</strong>
             {undo && <button type="button" className="small" disabled={undoing} onClick={undo}><Undo2 size={14} />Undo agent changes</button>}
+            {deleteButton}
           </div>
           {entry.committed.length > 0 && (
             <span className="muted small">

@@ -194,6 +194,10 @@ export const api = {
   },
 
   editor: (worldId: string) => request<EditorView>("GET", `${at(worldId)}/editor`),
+  /** Deletes an editor turn and everything after it from chat history; world changes are kept. */
+  deleteEditorMessage: (worldId: string, entryId: string) => request<EditorView>(
+    "DELETE", `${at(worldId)}/editor/${encodeURIComponent(entryId)}`, {},
+  ),
   /** Sends a message to the story editor, like `assist`: a review, or a fix of the changes the director approved. */
   edit(worldId: string, body: { message: string; pass: "review" | "fix"; model?: string }, onEvent: (event: EditorStreamEvent) => void, signal: AbortSignal): Promise<void> {
     return streamEvents(`${at(worldId)}/editor`, body, onEvent, signal);

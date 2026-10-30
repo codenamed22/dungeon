@@ -212,6 +212,11 @@ test("the story editor reviews a world in play, then makes the approved changes"
       assert.equal((await post("/api/worlds/served/step", {})).status, 409);
       assert.equal((await post("/api/worlds/served/wipe", { fromSequence: 2 })).status, 409);
       assert.equal((await post("/api/worlds/served/editor", { message: "Me too.", pass: "review" })).status, 409);
+      const busyChat = await editorView();
+      const deleteWhileBusy = await fetch(`${base}/api/worlds/served/editor/${busyChat.chat[0]!.id}`, {
+        method: "DELETE", headers: { "Content-Type": "application/json" }, body: "{}",
+      });
+      assert.equal(deleteWhileBusy.status, 409);
       assert.equal(await engine.acquireLease("served", "a-run-elsewhere", 60_000), false, "the editor holds the lease");
       stop.abort();
       await working;
@@ -221,6 +226,23 @@ test("the story editor reviews a world in play, then makes the approved changes"
       assert.deepEqual([chat.length, chat.at(-1).message, chat.at(-1).stopped], [2, "Review again.", "Stopped."]);
       assert.ok(await engine.acquireLease("served", "a-run-elsewhere", 60_000), "and lets it go");
       await engine.releaseLease("served", "a-run-elsewhere");
+    });
+
+    await t.test("deleting an editor message truncates it and all newer chat, without changing the world", async () => {
+      await engine.createWorld(starterWorld("chat-rewind"));
+      await engine.saveEditorChat("chat-rewind", [{ id: "first" }, { id: "second" }, { id: "third" }]);
+      const before = (await engine.getWorld("chat-rewind")).revision;
+      const response = await fetch(`${base}/api/worlds/chat-rewind/editor/second`, {
+        method: "DELETE", headers: { "Content-Type": "application/json" }, body: "{}",
+      });
+      assert.equal(response.status, 200);
+      const updated = await response.json() as { chat: { id: string }[]; busy: boolean };
+      assert.deepEqual(updated, { chat: [{ id: "first" }], busy: false });
+      assert.equal((await engine.getWorld("chat-rewind")).revision, before);
+      const missing = await fetch(`${base}/api/worlds/chat-rewind/editor/missing`, {
+        method: "DELETE", headers: { "Content-Type": "application/json" }, body: "{}",
+      });
+      assert.equal(missing.status, 404);
     });
   } finally {
     server.close();

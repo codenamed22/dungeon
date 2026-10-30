@@ -57,6 +57,34 @@ export class EditorService {
     return { chat: await this.engine.getEditorChat(worldId) as EditorEntry[], busy: this.busy.has(worldId) };
   }
 
+  /** Deletes one turn and all newer chat turns, leaving the world unchanged. */
+  async deleteFrom(worldId: string, entryId: string): Promise<EditorView> {
+    if (this.busy.has(worldId)) throw new EngineError("WORLD_BUSY", "The story editor is already working on this world");
+    this.busy.add(worldId);
+    const lease = new Lease(this.engine, worldId, LEASE_MS);
+    let held = false;
+    try {
+      try {
+        await lease.acquire();
+        held = true;
+      } catch (error) {
+        if (error instanceof EngineError && error.code === "WORLD_BUSY") {
+          throw new EngineError("WORLD_BUSY", "This world is running; pause it, then edit the story editor chat");
+        }
+        throw error;
+      }
+      const chat = await this.engine.getEditorChat(worldId) as EditorEntry[];
+      const index = chat.findIndex((entry) => entry.id === entryId);
+      if (index < 0) throw new EngineError("NOT_FOUND", `No story editor message ${entryId}`);
+      const kept = chat.slice(0, index);
+      await this.engine.saveEditorChat(worldId, kept);
+      return { chat: kept, busy: false };
+    } finally {
+      if (held) await lease.release();
+      this.busy.delete(worldId);
+    }
+  }
+
   isBusy(worldId: string): boolean {
     return this.busy.has(worldId);
   }

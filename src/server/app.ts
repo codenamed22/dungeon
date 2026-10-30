@@ -741,6 +741,8 @@ export function createApp(options: AppOptions): (request: IncomingMessage, respo
         return json(await editor.view(worldId!));
       case "POST worlds/:world/editor":
         return editorStream(request, response, worldId!);
+      case "DELETE worlds/:world/editor/:character":
+        return json(await editor.deleteFrom(worldId!, characterId!));
       case "POST worlds/:world/pause":
         return json(runs.pause(worldId!));
       case "GET creator":
