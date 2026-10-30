@@ -189,7 +189,7 @@ export const api = {
    * Refusals before it starts throw an ApiError; later failures arrive as an
    * error event. Aborting the signal stops it, keeping what it has done.
    */
-  assist(draftId: string, body: { message: string; model?: string; step?: BuildStepId; expectedRevision: number }, onEvent: (event: AssistantEvent) => void, signal: AbortSignal): Promise<void> {
+  assist(draftId: string, body: { message: string; model?: string; effort?: string; step?: BuildStepId; expectedRevision: number }, onEvent: (event: AssistantEvent) => void, signal: AbortSignal): Promise<void> {
     return streamEvents(`${draftAt(draftId)}/assistant`, body, onEvent, signal);
   },
 

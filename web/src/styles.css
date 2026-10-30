@@ -432,6 +432,8 @@ dialog.dialog[open] { display: flex; flex-direction: column; animation: enter .1
 .assistant-meta button { min-height: 0; padding: 0; border: 0; background: none; color: var(--muted); font-size: 11.5px; font-weight: 400; max-width: 60%; overflow: hidden; text-overflow: ellipsis; }
 .assistant-meta button:hover:not(:disabled) { background: none; color: var(--green); }
 .assistant-meta .sample-add { display: inline-flex; align-items: center; gap: 3px; flex-shrink: 0; }
+.reasoning-picker { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; flex-shrink: 0; }
+.reasoning-picker select { min-height: 0; padding: 2px 4px; font-size: 11.5px; }
 .sample-files { display: flex; flex-wrap: wrap; gap: 6px; }
 .sample-file {
   display: inline-flex; align-items: center; gap: 5px; max-width: 100%; padding: 2px 4px 2px 8px;

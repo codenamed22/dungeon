@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { z } from "zod";
 import {
-  DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_OPENROUTER_MODEL, fetchOpenRouterModels, OpenRouterProvider,
+  creatorSettingsFromEnv, DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_OPENROUTER_MODEL, fetchOpenRouterModels, OpenRouterProvider,
   openRouterSettingsFromEnv,
 } from "../src/agents/openrouter.ts";
 import type { OpenRouterSettings } from "../src/agents/openrouter.ts";
@@ -137,6 +137,17 @@ test("missing or invalid settings fail with a configuration error", () => {
   for (const value of ["0", "-3", "1.5", "lots"]) {
     fails({ ...key, DUNGEONS_MAX_OUTPUT_TOKENS: value }, /^DUNGEONS_MAX_OUTPUT_TOKENS must be a positive integer$/);
   }
+});
+
+test("the creator's selected effort overrides its environment default", () => {
+  const env = {
+    OPENROUTER_API_KEY: KEY,
+    DUNGEONS_CREATOR_EFFORT: "low",
+    DUNGEONS_REASONING_EFFORT: "medium",
+  };
+  assert.equal(creatorSettingsFromEnv(env).effort, "low");
+  assert.equal(creatorSettingsFromEnv(env, undefined, "high").effort, "high");
+  assert.equal(creatorSettingsFromEnv(env, undefined, "default").effort, "default");
 });
 
 test("listing models needs no key, and a failed listing is a configuration error", async () => {

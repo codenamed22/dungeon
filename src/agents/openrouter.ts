@@ -522,7 +522,11 @@ export function creatorModelFromEnv(env: NodeJS.ProcessEnv): string {
   return setting(env, "DUNGEONS_CREATOR_MODEL") || setting(env, "DUNGEONS_MODEL") || DEFAULT_OPENROUTER_MODEL;
 }
 
-export function creatorSettingsFromEnv(env: NodeJS.ProcessEnv, model?: string): ChatSettings {
+export function creatorSettingsFromEnv(
+  env: NodeJS.ProcessEnv,
+  model?: string,
+  effort?: (typeof REASONING_EFFORTS)[number] | "default",
+): ChatSettings {
   const apiKey = setting(env, "OPENROUTER_API_KEY");
   if (!apiKey) throw new ProviderConfigError("Set OPENROUTER_API_KEY to use the AI creator (see .env.example)");
   const maxOutputTokens = Number(setting(env, "DUNGEONS_CREATOR_MAX_TOKENS") ?? DEFAULT_CREATOR_MAX_TOKENS);
@@ -532,7 +536,7 @@ export function creatorSettingsFromEnv(env: NodeJS.ProcessEnv, model?: string): 
   return {
     apiKey,
     model: model?.trim() || creatorModelFromEnv(env),
-    effort: effortSetting(env, "DUNGEONS_CREATOR_EFFORT") ?? effortSetting(env, "DUNGEONS_REASONING_EFFORT"),
+    effort: effort ?? effortSetting(env, "DUNGEONS_CREATOR_EFFORT") ?? effortSetting(env, "DUNGEONS_REASONING_EFFORT"),
     maxOutputTokens,
     ...systemPromptSetting(env),
   };

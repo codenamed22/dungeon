@@ -9,6 +9,7 @@ import { agentPrompts, direct, memoryReport } from "../agents/inspect.ts";
 import { computeMetrics } from "../agents/metrics.ts";
 import {
   capabilitiesOf, creatorModelFromEnv, creatorSettingsFromEnv, DEFAULT_OPENROUTER_MODEL, fetchOpenRouterModels, OpenRouterChat,
+  REASONING_EFFORTS,
 } from "../agents/openrouter.ts";
 import type { OpenRouterModel } from "../agents/openrouter.ts";
 import { frameOf, judgeSystemPrompt, narratorSystemPrompt, refereeSystemPrompt } from "../agents/prompts.ts";
@@ -168,6 +169,7 @@ const bodies = {
   assistant: z.object({
     message: z.string().trim().min(1).max(16_000),
     model: z.string().max(200).optional(),
+    effort: z.enum([...REASONING_EFFORTS, "default"]).optional(),
     step: z.enum(BUILD_STEP_IDS).optional(),
     expectedRevision: z.number().int().positive(),
   }),
@@ -422,7 +424,7 @@ export function createApp(options: AppOptions): (request: IncomingMessage, respo
   async function assistant(request: IncomingMessage, response: ServerResponse, draftId: string): Promise<void> {
     const body = parseBody(bodies.assistant, await readJson(request));
     requirePlayable();
-    const settings = creatorSettingsFromEnv(env, body.model);
+    const settings = creatorSettingsFromEnv(env, body.model, body.effort);
     const chat = OpenRouterChat.create(options.creatorFetch ? { ...settings, fetch: options.creatorFetch } : settings, await catalog());
     const controller = new AbortController();
     let heartbeat: NodeJS.Timeout | undefined;

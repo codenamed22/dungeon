@@ -3,7 +3,8 @@ import type { KeyboardEvent } from "react";
 import { ArrowUp, Check, ChevronDown, CircleAlert, FileText, Paperclip, Sparkles, Square, Undo2, X } from "lucide-react";
 import { api, ApiError, errorText } from "../api.ts";
 import type { AssistantEvent } from "../api.ts";
-import type { BuildStepId, ChatEntry, CreatorUsage, Draft, ToolLine } from "../types.ts";
+import { REASONING_EFFORTS } from "../../../src/agents/models.ts";
+import type { BuildStepId, ChatEntry, CreatorUsage, Draft, ModelInfo, ToolLine } from "../types.ts";
 import { MAX_SAMPLE_CHARACTERS, normalizeSample } from "../../../src/creator/samples.ts";
 import { BUILD_STEPS, buildStep, nextBuildStep } from "../../../src/creator/steps.ts";
 import { NARROW, useDrag, useMedia, useOverlay, useStored } from "../ui/hooks.ts";
@@ -59,6 +60,7 @@ export function AssistantPanel({ editor, draftId, launch }: { editor: DraftEdito
   const [undoing, setUndoing] = useState<string | null>(null);
   const [seenIntro, setSeenIntro] = useStored<"yes" | "no">("dungeons.creatorIntro", "no");
   const [chosenModel, setChosenModel] = useStored<string>("dungeons.creatorModel", "");
+  const [chosenEffort, setChosenEffort] = useStored<string>("dungeons.creatorEffort", "");
   const [stepwise, setStepwise] = useStored<"yes" | "no">("dungeons.creatorStepwise", "yes");
   /** The message after which the director left a guided build; kept, so a reload doesn't bring the steps back. */
   const [leftAt, setLeftAt] = useStored<string>(`dungeons.creatorLeftAt.${draftId}`, "");
@@ -245,7 +247,8 @@ export function AssistantPanel({ editor, draftId, launch }: { editor: DraftEdito
     };
     try {
       await api.assist(draftId, {
-        message: trimmed, expectedRevision: saved.revision, ...(chosenModel ? { model: chosenModel } : {}), ...(runStep ? { step: runStep } : {}),
+        message: trimmed, expectedRevision: saved.revision, ...(chosenModel ? { model: chosenModel } : {}),
+        ...(chosenEffort ? { effort: chosenEffort } : {}), ...(runStep ? { step: runStep } : {}),
       }, onEvent, abort.signal);
     } catch (error) {
       if (error instanceof ApiError) {
@@ -404,6 +407,7 @@ export function AssistantPanel({ editor, draftId, launch }: { editor: DraftEdito
             <button type="button" onClick={() => setPicking((shown) => !shown)} aria-expanded={picking} title="Choose the model">
               {model} <ChevronDown size={11} />
             </button>
+            <ReasoningEffortPicker model={model} current={chosenEffort} onChange={setChosenEffort} />
             <button type="button" className="sample-add" aria-label="Sample chats" disabled={running || sampling || seenIntro === "no"} onClick={() => fileInput.current?.click()}
               title={`Add chats for the AI creator to draw on: text exports of conversations, up to ${MAX_SAMPLE_CHARACTERS.toLocaleString("en-US")} characters in all. It sends them to the model when it reads them; they never go into the world or its downloads.`}>
               <Paperclip size={11} /><span className="label">{sampling ? "Adding…" : "Sample chats"}</span>
@@ -422,6 +426,50 @@ export function AssistantPanel({ editor, draftId, launch }: { editor: DraftEdito
         </form>
       </aside>
     </>
+  );
+}
+
+function ReasoningEffortPicker({ model, current, onChange }: { model: string; current: string; onChange(effort: string): void }) {
+  const [capabilities, setCapabilities] = useState<ModelInfo | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const efforts: readonly string[] = capabilities?.efforts ?? REASONING_EFFORTS;
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setCapabilities(null);
+    setError(null);
+    api.models(model)
+      .then((models) => {
+        if (active) setCapabilities(models.find((entry) => entry.id === model) ?? null);
+      })
+      .catch((problem) => {
+        if (active) setError(errorText(problem));
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => { active = false; };
+  }, [model]);
+
+  useEffect(() => {
+    if (capabilities?.reasoning && current && current !== "default" && !efforts.includes(current)) onChange("");
+  }, [capabilities, current, efforts, onChange]);
+
+  if (loading) return <span className="muted small">Reasoning…</span>;
+  if (error) return <span className="error small" title={error}>Effort options unavailable</span>;
+  if (!capabilities?.reasoning) return <span className="muted small">No reasoning</span>;
+
+  return (
+    <label className="reasoning-picker">
+      <span>Reasoning</span>
+      <select aria-label="Reasoning effort" value={current} onChange={(event) => onChange(event.target.value)}>
+        <option value="">Server default</option>
+        <option value="default">Model default</option>
+        {efforts.map((effort) => <option key={effort} value={effort}>{effort}</option>)}
+      </select>
+    </label>
   );
 }
 
