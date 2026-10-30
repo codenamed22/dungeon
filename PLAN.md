@@ -562,6 +562,37 @@
   - the bar on one row at 390 px.
 
   There were no console errors and no sideways scrolling.
+- **Sample chats for the AI creator: done locally.**
+  - **Adding them:** the director adds text files of conversations, such as a
+    group chat's export, for the AI creator to draw on. A draft holds up to 5
+    files and 100,000 characters in all.
+  - **Storage:** the files live in a new `samples` column beside the draft
+    (migration 10), like its chat. Adding one leaves the draft's revision alone.
+    The browser sees only names and sizes, and downloads and the world leave
+    them out.
+  - **What the creator gets:** its instructions list the files and say how to
+    use them. It borrows voices, concerns, relationships, and situations; it
+    bases characters on the people only if asked; and it leaves out personal
+    details.
+  - **Reading:** `read_samples` returns a part of up to 25,000 characters at a
+    time. Parts end at a line break, never inside an emoji. The tool is offered
+    only when there are files, and in every step of a guided build. Its reads
+    don't count as changes.
+  - **Panel:** a **Sample chats** button (a paperclip on phones) with
+    removable chips. A file far over the limit is refused in the browser, and
+    the server refuses an empty file, one that isn't text, a sixth file, or one
+    over the remaining characters, saying how many are left.
+
+  Verified 2026-10-30 on local PostgreSQL 16: typecheck, both builds, and all
+  251 tests pass. Headless Chrome against a simulated creator at 1440 px and
+  390 px checked these:
+  - adding a file, which showed as a chip while the revision stayed 1;
+  - refusing a 150,000-character file and a binary one;
+  - the creator reading the file, with "No changes" on its card;
+  - removing the file;
+  - the phone row on one line.
+
+  The only failed request was the binary file's expected 400.
 - Development and tests use local PostgreSQL or a Neon development branch, not the
   `production` branch.
 

@@ -3,7 +3,9 @@ import type { AssistantLimits, AssistantUsage, ChatModel, LoopEvent, ToolLine } 
 import { creatorSystemPrompt, frameOf } from "../agents/prompts.ts";
 import { draftProblems } from "./operations.ts";
 import type { Draft, DraftProblem } from "./operations.ts";
-import { creatorExamples, creatorToolDefinitions, runCreatorTool } from "./tools.ts";
+import { sampleInfo } from "./samples.ts";
+import type { DraftSample } from "./samples.ts";
+import { creatorExamples, creatorToolDefinitions, runCreatorTool, SAMPLE_TOOL } from "./tools.ts";
 import type { BuildStepId } from "./steps.ts";
 
 // The AI creator's loop for one message from the director (see
@@ -41,7 +43,7 @@ export interface CreatorTurn {
 
 const HISTORY_TURNS = 6;
 /** Tools that only read, so a turn's changes leave them out. */
-const READS = new Set(["get_draft", "check_draft", "get_example"]);
+const READS = new Set(["get_draft", "check_draft", "get_example", SAMPLE_TOOL]);
 const HISTORY_REPLY_CHARS = 2000;
 
 /** Counts, never content: the draft's text reaches the model only through tool results. */
@@ -57,8 +59,11 @@ function draftStatus(draft: Draft): string {
     + `${count(errors, "error")} and ${count(problems.length - errors, "warning")}. Call get_draft to read it.`;
 }
 
-function conversation(draft: Draft, history: readonly CreatorTurn[], message: string, step: BuildStepId | undefined): unknown[] {
-  const messages: unknown[] = [{ role: "system", content: creatorSystemPrompt(frameOf(draft.cast, draft.seed), creatorExamples(), step) }];
+function conversation(
+  draft: Draft, history: readonly CreatorTurn[], message: string, step: BuildStepId | undefined, samples: readonly DraftSample[],
+): unknown[] {
+  const listings = samples.map(sampleInfo);
+  const messages: unknown[] = [{ role: "system", content: creatorSystemPrompt(frameOf(draft.cast, draft.seed), creatorExamples(), step, listings) }];
   for (const turn of history.slice(-HISTORY_TURNS)) {
     const changes = turn.tools.filter((line) => line.ok && !READS.has(line.name));
     const reply = [
@@ -79,6 +84,8 @@ export async function runCreator(options: {
   message: string;
   /** In a guided build, the step to run: only its tools are open. */
   step?: BuildStepId;
+  /** Sample chats the director added, which it may read for inspiration. */
+  samples?: readonly DraftSample[];
   limits?: CreatorLimits;
   signal?: AbortSignal;
   onEvent(event: CreatorEvent): void;
@@ -86,16 +93,17 @@ export async function runCreator(options: {
   save(draft: Draft): Promise<number>;
 }): Promise<CreatorRun> {
   const { step, onEvent } = options;
+  const samples = options.samples ?? [];
   let draft = options.draft;
   const run = await runToolLoop({
     chat: options.chat,
-    messages: conversation(options.draft, options.history, options.message, step),
-    definitions: creatorToolDefinitions(step),
+    messages: conversation(options.draft, options.history, options.message, step, samples),
+    definitions: creatorToolDefinitions(step, samples.length > 0),
     limits: options.limits ?? CREATOR_LIMITS,
     signal: options.signal,
     onEvent,
     runTool: async (name, argumentsText) => {
-      const outcome = runCreatorTool(draft, name, argumentsText, step);
+      const outcome = runCreatorTool(draft, name, argumentsText, step, samples);
       draft = outcome.draft;
       return outcome;
     },

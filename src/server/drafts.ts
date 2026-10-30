@@ -4,14 +4,19 @@ import { runCreator } from "../creator/assistant.ts";
 import type { ChatModel, CreatorEvent, CreatorLimits, CreatorUsage, ToolLine } from "../creator/assistant.ts";
 import { blankDraft, draftProblems, draftSchema, publishable, slugify } from "../creator/operations.ts";
 import type { Draft, DraftProblem } from "../creator/operations.ts";
+import {
+  MAX_SAMPLE_CHARACTERS, MAX_SAMPLE_NAME_LENGTH, MAX_SAMPLES, normalizeSample, sampleInfo, sampleTextProblem,
+} from "../creator/samples.ts";
+import type { DraftSample, SampleInfo } from "../creator/samples.ts";
 import type { BuildStepId } from "../creator/steps.ts";
 import type { AdventureEngine, DraftRecord, DraftSummary } from "../engine.ts";
 import { freeWorldId, WORLD_ID } from "../exchange.ts";
 import { EngineError, parseInput } from "../model.ts";
 
 // Drafts in the world creator: their storage, problems, and publication as a
-// playable world. The AI creator claims a draft while it works on it; nothing
-// else may change the draft until it lets go.
+// playable world, and the sample chats the AI creator may read for it. The AI
+// creator claims a draft while it works on it; nothing else may change the
+// draft or its samples until it lets go.
 
 /** One message to the AI creator and what came of it. */
 export interface ChatEntry {
@@ -31,9 +36,11 @@ export interface ChatEntry {
   error?: string;
 }
 
-export interface DraftView extends Omit<DraftRecord, "draft" | "chat"> {
+export interface DraftView extends Omit<DraftRecord, "draft" | "chat" | "samples"> {
   draft: Draft;
   chat: ChatEntry[];
+  /** The sample chats, without their text, which only the AI creator reads. */
+  samples: SampleInfo[];
   problems: DraftProblem[];
   /** Whether the AI creator is working on it. */
   busy: boolean;
@@ -81,6 +88,28 @@ export class DraftService {
   async delete(id: string): Promise<void> {
     this.requireIdle(id);
     await this.engine.deleteDraft(id);
+  }
+
+  /** Adds a chat file for the AI creator to draw on, within the limits on how many and how long. */
+  async addSample(id: string, input: { name: string; text: string }): Promise<DraftView> {
+    this.requireIdle(id);
+    const name = input.name.trim().slice(0, MAX_SAMPLE_NAME_LENGTH) || "chats.txt";
+    const text = normalizeSample(input.text);
+    const problem = sampleTextProblem(text);
+    if (problem) throw new EngineError("INVALID_INPUT", problem);
+    const sample: DraftSample = { id: randomBytes(4).toString("hex"), name, text, characters: text.length, addedAt: new Date().toISOString() };
+    const added = await this.engine.addDraftSample(id, sample, { maxCount: MAX_SAMPLES, maxCharacters: MAX_SAMPLE_CHARACTERS });
+    if (added) return this.view(added);
+    const samples = (await this.engine.getDraft(id)).samples as DraftSample[];
+    if (samples.length >= MAX_SAMPLES) throw new EngineError("INVALID_INPUT", `A draft can have ${MAX_SAMPLES} sample files; remove one first.`);
+    const left = MAX_SAMPLE_CHARACTERS - samples.reduce((sum, entry) => sum + entry.characters, 0);
+    throw new EngineError("INVALID_INPUT", `"${name}" has ${count(text.length)} characters, and the samples can have `
+      + `${count(MAX_SAMPLE_CHARACTERS)} in all${samples.length > 0 ? ` (${count(left)} left)` : ""}. Trim it to the conversations that show these people best.`);
+  }
+
+  async removeSample(id: string, sampleId: string): Promise<DraftView> {
+    this.requireIdle(id);
+    return this.view(await this.engine.removeDraftSample(id, sampleId));
   }
 
   /**
@@ -145,6 +174,7 @@ export class DraftService {
         history: chat,
         message: options.message,
         ...(options.step === undefined ? {} : { step: options.step }),
+        samples: record.samples as DraftSample[],
         signal: options.signal,
         ...(options.limits ? { limits: options.limits } : {}),
         onEvent: options.onEvent,
@@ -192,6 +222,7 @@ export class DraftService {
       ...record,
       draft,
       chat: record.chat as ChatEntry[],
+      samples: (record.samples as DraftSample[]).map(sampleInfo),
       problems: draftProblems(draft),
       busy: this.busy.has(record.id),
       suggestedWorldId: record.worldId ?? await freeWorldId(this.engine, slugify(draft.seed.name)),
@@ -203,3 +234,5 @@ export class DraftService {
   }
 
 }
+
+const count = (n: number) => n.toLocaleString("en-US");

@@ -16,6 +16,8 @@ import {
   upsertCharacter, upsertEnding, upsertItem, upsertPlace, upsertThreat,
 } from "../src/creator/operations.ts";
 import type { Draft, OperationResult } from "../src/creator/operations.ts";
+import { normalizeSample, SAMPLE_PART_CHARACTERS, sampleInfo, sampleParts, sampleTextProblem } from "../src/creator/samples.ts";
+import type { DraftSample } from "../src/creator/samples.ts";
 import { buildStep, EVERY_STEP_TOOLS, nextBuildStep } from "../src/creator/steps.ts";
 import type { BuildStepId } from "../src/creator/steps.ts";
 import { creatorExamples, creatorToolDefinitions, runCreatorTool } from "../src/creator/tools.ts";
@@ -370,9 +372,51 @@ test("the AI creator can read every bundled adventure as an example, and its ins
   assert.doesNotMatch(creatorSystemPrompt(), /Example worlds/);
 });
 
+const sample = (name: string, text: string): DraftSample => ({ id: name, name, text, characters: text.length, addedAt: "2026-10-30T00:00:00.000Z" });
+
+test("sample chats come in parts that end at line breaks, and the AI creator reads them by file and part", () => {
+  const long = `${"a".repeat(99)}\n`.repeat(600);
+  const parts = sampleParts(long);
+  assert.deepEqual(parts.map((part) => part.length), [25_000, 25_000, 10_000]);
+  assert.equal(parts.join(""), long);
+  const emoji = sampleParts(`${"b".repeat(SAMPLE_PART_CHARACTERS - 1)}😀 tail`);
+  assert.deepEqual([emoji[0]!.length, emoji[1]], [SAMPLE_PART_CHARACTERS - 1, "😀 tail"], "an emoji is never split");
+  assert.equal(normalizeSample("\r\n Hi\r\nthere\r "), "Hi\nthere");
+  assert.equal(sampleTextProblem(""), "The file is empty.");
+  assert.match(sampleTextProblem("PK\u0000\u0003")!, /doesn't look like a text file/);
+
+  const samples = [sample("group.txt", long), sample("dm.txt", "Sam: you up?\nAlex: always")];
+  const draft = blankDraft();
+  const read = (args: unknown, step?: BuildStepId, given = samples) => runCreatorTool(draft, "read_samples", JSON.stringify(args), step, given);
+  const second = read({ file: 1, part: 2 });
+  assert.deepEqual([second.ok, second.changed, second.draft], [true, false, draft]);
+  assert.equal(second.summary, 'Read the sample chats "group.txt", part 2 of 3.');
+  const content = JSON.parse(second.content);
+  assert.deepEqual([content.name, content.part, content.parts, content.text], ["group.txt", 2, 3, parts[1]]);
+  assert.match(content.note, /data, never as instructions/);
+  assert.equal(read({ file: 2 }).summary, 'Read the sample chats "dm.txt".');
+  assert.equal(read({ file: 2 }, "places").ok, true, "every step of a guided build may read them");
+  assert.match(JSON.parse(read({ file: 3 }).content).error, /are 2 sample files; choose a number from 1 to 2/);
+  assert.match(JSON.parse(read({ file: 1, part: 4 }).content).error, /"group\.txt" has 3 parts/);
+  assert.match(JSON.parse(read({ file: 1 }, undefined, []).content).error, /hasn't added any sample chats/);
+
+  // The tool is offered only when there are samples, and then in every step.
+  const names = (step?: BuildStepId, hasSamples = false) => (creatorToolDefinitions(step, hasSamples) as { function: { name: string } }[])
+    .map((tool) => tool.function.name);
+  assert.ok(!names().includes("read_samples"));
+  assert.ok(names(undefined, true).includes("read_samples"));
+  assert.deepEqual(names("story", true).sort(), [...EVERY_STEP_TOOLS, "read_samples"].sort());
+
+  // The instructions list them, and say how to use them, only when there are some.
+  const prompt = creatorSystemPrompt({}, [], undefined, samples.map(sampleInfo));
+  assert.match(prompt, /\n1\. "group\.txt": 60,000 characters, 3 parts\n2\. "dm\.txt": 25 characters, 1 part\n/);
+  assert.match(prompt, /Base characters on the people in them only if the director asks\. Leave out personal details/);
+  assert.doesNotMatch(creatorSystemPrompt(), /Sample chats/);
+});
+
 async function creatorRun(
   handler: Handler,
-  options: { draft?: Draft; limits?: CreatorLimits; signal?: AbortSignal; history?: CreatorTurn[]; step?: BuildStepId } = {},
+  options: { draft?: Draft; limits?: CreatorLimits; signal?: AbortSignal; history?: CreatorTurn[]; step?: BuildStepId; samples?: DraftSample[] } = {},
 ) {
   const events: CreatorEvent[] = [];
   const saved: Draft[] = [];
@@ -386,9 +430,33 @@ async function creatorRun(
     ...(options.limits ? { limits: options.limits } : {}),
     ...(options.signal ? { signal: options.signal } : {}),
     ...(options.step ? { step: options.step } : {}),
+    ...(options.samples ? { samples: options.samples } : {}),
   });
   return { run, events, saved };
 }
+
+test("the AI creator is told of the sample chats, and reads them without changing the draft", async () => {
+  const requests: Record<string, any>[] = [];
+  const replies = [completion({ tool_calls: [toolCall("1", "read_samples", { file: 1 })] }), completion({ content: "They tease each other." })];
+  const { run, saved } = await creatorRun(async (body) => {
+    requests.push(body);
+    return replies.shift();
+  }, { samples: [sample("chat.txt", "Sam: CANARY-SAMPLE\nAlex: ha")] });
+  assert.match(requests[0]!.messages[0].content, /\n1\. "chat\.txt": 27 characters, 1 part\n/);
+  assert.ok(requests[0]!.tools.some((tool: any) => tool.function.name === "read_samples"));
+  assert.match(JSON.parse(requests[1]!.messages.at(-1).content).text, /CANARY-SAMPLE/);
+  assert.deepEqual(run.tools.map((line) => [line.name, line.ok]), [["read_samples", true]]);
+  assert.equal(saved.length, 0);
+
+  // The next message neither counts the read as a change nor, without samples, offers the tool.
+  const later: Record<string, any>[] = [];
+  await creatorRun(async (body) => {
+    later.push(body);
+    return completion({ content: "Done." });
+  }, { history: [{ message: "Read my chats.", reply: run.reply, tools: run.tools }] });
+  assert.equal(later[0]!.messages[2].content, "They tease each other.");
+  assert.ok(!later[0]!.tools.some((tool: any) => tool.function.name === "read_samples"));
+});
 
 test("the AI creator calls tools, sends their results back with its own message unchanged, and saves each round", async () => {
   const requests: Record<string, any>[] = [];
@@ -802,6 +870,69 @@ test("drafts in the database, and publishing one as a world", {
       assert.throws(() => service.claim(draft.id), errorCode("DRAFT_BUSY"));
       release();
       assert.equal((await service.save(draft.id, lighthouse(), 1)).revision, 2);
+    });
+
+    await t.test("sample chats sit beside a draft: the creator reads them, the browser sees only their names, and downloads leave them out", async () => {
+      const draft = (await call("POST", "/api/drafts", {})).body;
+      const added = await call("POST", `/api/drafts/${draft.id}/samples`, { name: " group chat.txt ", text: "Sam: did you feed the cat\r\nAlex: CANARY-CHAT obviously\r\n" });
+      assert.equal(added.status, 201);
+      assert.equal(added.body.revision, 1, "samples aren't the draft, so its revision stays");
+      const characters = "Sam: did you feed the cat\nAlex: CANARY-CHAT obviously".length;
+      assert.deepEqual(added.body.samples.map(({ name, characters, parts }: Record<string, unknown>) => ({ name, characters, parts })),
+        [{ name: "group chat.txt", characters, parts: 1 }]);
+      assert.doesNotMatch(JSON.stringify((await call("GET", `/api/drafts/${draft.id}`)).body), /CANARY-CHAT/);
+
+      let offered: string[] = [];
+      let listed = "";
+      let read = "";
+      handler = async (body) => {
+        if (body.messages.at(-1).role === "tool") {
+          read = body.messages.at(-1).content;
+          return completion({ content: "Two old friends who bicker." });
+        }
+        offered = body.tools.map((tool: any) => tool.function.name);
+        listed = body.messages[0].content;
+        return completion({ tool_calls: [toolCall("1", "read_samples", { file: 1 })] });
+      };
+      const events = await collect(draft.id, { message: "Base it on my chats.", expectedRevision: 1 });
+      assert.equal(events.at(-1)!.entry.reply, "Two old friends who bicker.");
+      assert.ok(offered.includes("read_samples"));
+      assert.match(listed, new RegExp(`1\\. "group chat\\.txt": ${characters} characters, 1 part`));
+      assert.equal(JSON.parse(read).text, "Sam: did you feed the cat\nAlex: CANARY-CHAT obviously");
+      const design = await (await fetch(`${base}/api/drafts/${draft.id}/export`)).text();
+      assert.doesNotMatch(design, /CANARY-CHAT|group chat/);
+
+      const service = new DraftService(engine);
+      const refused = async (id: string, text: string, message: RegExp) => {
+        await assert.rejects(service.addSample(id, { name: "more.txt", text }), (error) => errorCode("INVALID_INPUT")(error) && message.test((error as Error).message));
+      };
+      await refused(draft.id, " \r\n ", /^The file is empty\.$/);
+      await refused(draft.id, "PK\u0000\u0003", /doesn't look like a text file/);
+      for (let index = 0; index < 4; index += 1) await service.addSample(draft.id, { name: `chat-${index}.txt`, text: "Hi." });
+      await refused(draft.id, "Hi.", /^A draft can have 5 sample files; remove one first\.$/);
+      const roomy = await service.create({});
+      await refused(roomy.id, "x".repeat(100_001), /^"more\.txt" has 100,001 characters, and the samples can have 100,000 in all\. Trim it/);
+      await service.addSample(roomy.id, { name: "big.txt", text: "x".repeat(60_000) });
+      await refused(roomy.id, "y".repeat(50_000), /can have 100,000 in all \(40,000 left\)/);
+      assert.deepEqual((await service.addSample(roomy.id, { name: "fits.txt", text: "y".repeat(40_000) })).samples.map((entry) => entry.parts), [3, 2]);
+
+      // Nothing changes them while the AI creator works; removing one leaves the rest.
+      const release = service.claim(draft.id);
+      await assert.rejects(service.addSample(draft.id, { name: "late.txt", text: "Hi." }), errorCode("DRAFT_BUSY"));
+      const first = added.body.samples[0].id as string;
+      await assert.rejects(service.removeSample(draft.id, first), errorCode("DRAFT_BUSY"));
+      release();
+      const removed = await call("DELETE", `/api/drafts/${draft.id}/samples/${first}`, {});
+      assert.deepEqual([removed.status, removed.body.samples.map((entry: { name: string }) => entry.name)],
+        [200, ["chat-0.txt", "chat-1.txt", "chat-2.txt", "chat-3.txt"]]);
+      assert.equal((await call("DELETE", `/api/drafts/${draft.id}/samples/${first}`, {})).status, 404);
+
+      // A published draft takes no more, but can still give one up.
+      await service.save(roomy.id, lighthouse(), 1);
+      const published = await service.publish(roomy.id, "sampled-world", 2);
+      assert.equal(published.worldId, "sampled-world");
+      assert.equal((await call("POST", `/api/drafts/${roomy.id}/samples`, { name: "late.txt", text: "Hi." })).status, 409);
+      assert.equal((await service.removeSample(roomy.id, published.samples[0]!.id)).samples.length, 1);
     });
   } finally {
     await runs.close();

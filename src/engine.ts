@@ -39,6 +39,8 @@ export interface DraftSummary {
 export interface DraftRecord extends DraftSummary {
   draft: unknown;
   chat: unknown[];
+  /** Sample chats for the AI creator, with their text. */
+  samples: unknown[];
   createdAt: string;
 }
 
@@ -53,6 +55,7 @@ interface DraftRow {
   id: string;
   draft: { seed?: { name?: unknown } } | null;
   chat: unknown;
+  samples: unknown;
   revision: number;
   world_id: string | null;
   published_at: Date | null;
@@ -72,6 +75,7 @@ function draftRecord(row: DraftRow): DraftRecord {
     createdAt: row.created_at.toISOString(),
     draft: row.draft,
     chat: Array.isArray(row.chat) ? row.chat : [],
+    samples: Array.isArray(row.samples) ? row.samples : [],
   };
 }
 
@@ -757,6 +761,40 @@ export class AdventureEngine {
     const current = await this.getDraft(id);
     if (current.publishedAt !== null) throw new EngineError("REQUEST_CONFLICT", `Draft ${id} has become a world and can no longer change`);
     throw new EngineError("STALE_REVISION", `Draft ${id} is at revision ${current.revision}, not ${expectedRevision}`);
+  }
+
+  /**
+   * Adds a sample to a draft that isn't published, if the draft then holds at
+   * most `maxCount` samples of at most `maxCharacters` in all; null if it
+   * wouldn't. The draft's revision stays the same: samples aren't the draft.
+   */
+  async addDraftSample(id: string, sample: { id: string; characters: number }, limits: { maxCount: number; maxCharacters: number }): Promise<DraftRecord | null> {
+    const result = await this.pool.query(
+      `UPDATE ${this.namespace}.world_drafts SET samples = samples || jsonb_build_array($2::jsonb), updated_at = now()
+       WHERE id = $1 AND published_at IS NULL AND jsonb_array_length(samples) < $3
+         AND (SELECT coalesce(sum((s ->> 'characters')::integer), 0) FROM jsonb_array_elements(samples) s) + $4 <= $5
+       RETURNING *`,
+      [id, JSON.stringify(sample), limits.maxCount, sample.characters, limits.maxCharacters],
+    );
+    if (result.rowCount === 1) return draftRecord(result.rows[0]);
+    const current = await this.getDraft(id);
+    if (current.publishedAt !== null) throw new EngineError("REQUEST_CONFLICT", `Draft ${id} has become a world and can no longer change`);
+    return null;
+  }
+
+  /** Removes a sample from a draft, published or not, so a private chat can always be taken back. */
+  async removeDraftSample(id: string, sampleId: string): Promise<DraftRecord> {
+    const result = await this.pool.query(
+      `UPDATE ${this.namespace}.world_drafts SET updated_at = now(), samples = coalesce(
+         (SELECT jsonb_agg(s ORDER BY position) FROM jsonb_array_elements(samples) WITH ORDINALITY AS kept(s, position)
+          WHERE s ->> 'id' <> $2), '[]'::jsonb)
+       WHERE id = $1 AND EXISTS (SELECT 1 FROM jsonb_array_elements(samples) s WHERE s ->> 'id' = $2)
+       RETURNING *`,
+      [id, sampleId],
+    );
+    if (result.rowCount === 1) return draftRecord(result.rows[0]);
+    await this.getDraft(id);
+    throw new EngineError("NOT_FOUND", `Draft ${id} has no sample ${sampleId}`);
   }
 
   async deleteDraft(id: string): Promise<void> {

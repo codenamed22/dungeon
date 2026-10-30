@@ -176,6 +176,10 @@ export const api = {
   draft: (draftId: string) => request<DraftView>("GET", draftAt(draftId)),
   saveDraft: (draftId: string, draft: Draft, expectedRevision: number) => request<DraftView>("PUT", draftAt(draftId), { draft, expectedRevision }),
   deleteDraft: (draftId: string) => request<{ ok: true }>("DELETE", draftAt(draftId), {}),
+  addSample: (draftId: string, name: string, text: string) => request<DraftView>("POST", `${draftAt(draftId)}/samples`, { name, text }),
+  removeSample: (draftId: string, sampleId: string) => request<DraftView>(
+    "DELETE", `${draftAt(draftId)}/samples/${encodeURIComponent(sampleId)}`, {},
+  ),
   publishDraft: (draftId: string, worldId: string, expectedRevision: number) => request<DraftView>(
     "POST", `${draftAt(draftId)}/publish`, { worldId, expectedRevision },
   ),

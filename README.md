@@ -211,6 +211,18 @@ What you can do:
   was and wasn't done.
   Pick any OpenRouter model that can call tools; the server's default is
   `DUNGEONS_CREATOR_MODEL` (see [Models](#models)).
+- **Sample chats.** **Sample chats**, under the AI creator's message box, adds
+  text files of real or invented conversations, such as a group chat's export,
+  for it to draw on: how these people talk, what they care about, how they get
+  on, and the kind of situations they get into. A draft holds up to 5 files and
+  100,000 characters in all. Its instructions list the files, and it reads them
+  with `read_samples`, a part of up to 25,000 characters at a time, in any step
+  of a guided build. It bases characters on the people in them only if you ask,
+  and leaves out personal details such as phone numbers and addresses. The
+  files are kept beside the draft, not in it: they never reach the world, a
+  download, or the browser again (it sees only their names and sizes), but
+  they are sent to the creator's model when it reads them. Remove one with its
+  ×; deleting the draft deletes them.
 - **Step by step.** In an empty draft, the AI creator builds the world with you
   in five steps (story, places, characters, challenges and threats, endings),
   and stops after each one for your approval. Each step can use only its own
@@ -299,7 +311,7 @@ What you can do:
   the next free one, replayed and checked first, so an edited or damaged
   history is refused. A full save holds the characters' private memories. It
   leaves out model-call traces (so the report shows no cost for earlier
-  turns), retry receipts, and the AI creator's and story editor's chats. Imports may be up to 16
+  turns), retry receipts, the AI creator's and story editor's chats, and sample chats. Imports may be up to 16
   MiB; the CLI has no limit.
 
 The interface works on a phone-sized screen, with a dark theme that follows
@@ -336,6 +348,7 @@ The server's HTTP API, under `/api`, is what the interface uses:
 | `GET /api/drafts`, `POST /api/drafts` | List drafts; create one, blank or from `{adventureId}`. |
 | `GET /api/drafts/:id`, `PUT /api/drafts/:id`, `DELETE /api/drafts/:id` | A draft with its problems and chat; replace it from `{draft, expectedRevision}`, refused with `STALE_REVISION` if it changed since. |
 | `POST /api/drafts/:id/publish` | Create the world from `{worldId, expectedRevision}`; a retry after a failure resumes. |
+| `POST /api/drafts/:id/samples`, `DELETE /api/drafts/:id/samples/:sample` | Add a sample chat for the AI creator from `{name, text}` (up to 5 files and 100,000 characters in all, not to a published draft), or remove one. The draft's view lists each sample's name, size, and parts, never its text. Refused with `DRAFT_BUSY` while the AI creator works. |
 | `GET /api/worlds/:id/export?kind=design\|save`, `GET /api/drafts/:id/export` | Download a world file: a design (the default), or a world's full save. |
 | `POST /api/import?worldId=ID` | Import a world file, sent as the body: a design becomes a draft, a save a world (under `worldId`, or the file's world ID made unique). |
 | `POST /api/drafts/:id/assistant` | Run the AI creator on `{message, model?, step?, expectedRevision}`, streamed as one JSON event per line. `step` (`story`, `places`, `characters`, `challenges`, or `endings`) runs that step of a guided build, with only its tools. Other writes to the draft get `DRAFT_BUSY` until it finishes. |
@@ -740,7 +753,9 @@ event's location, plus the actor. A move is perceived at both ends.
 - Migration 6 adds `adventure_setups`: each world's saved personas and models.
   It is director state beside the world, like mutes, never events. Migration 8
   adds `world_editor_chats`: each world's story editor chat, the last 100
-  messages.
+  messages. Migration 10 adds `samples` to `world_drafts`: the sample chats the
+  AI creator may read, kept beside the draft like its chat, so its revision
+  doesn't change when one is added.
 - An edit or deletion is a `retraction` event; the original stays in the log.
   Queries for an agent's view leave out a deleted event and give an edited one
   its newest words, and memory search matches the new words, never the old.
@@ -868,7 +883,12 @@ Integration coverage includes:
   playable world with its cast, and resumes after failing partway; the AI
   creator streams its work, saves each round and its chat, keeps partial work
   when the browser leaves, blocks other writes while it works, and can be undone
-  at the revision it produced, but not after a later change.
+  at the revision it produced, but not after a later change. Sample chats are
+  listed in its instructions and read by part, without changing the draft;
+  the browser sees only their names and sizes, and a design leaves them out;
+  an empty file, one that isn't text, a sixth file, or too many characters is
+  refused with what is left; nothing changes them while the creator works; and
+  a published draft takes no more, but can still give one up.
 - **Story editor:** a review can only read and propose, and a write is refused;
   a fix makes the approved changes, saving agent changes once a round and
   committing story changes as it goes; it streams its work, keeps a chat per

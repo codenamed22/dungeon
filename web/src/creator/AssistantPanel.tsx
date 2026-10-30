@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
-import { ArrowUp, Check, ChevronDown, CircleAlert, Sparkles, Square, Undo2, X } from "lucide-react";
+import { ArrowUp, Check, ChevronDown, CircleAlert, FileText, Paperclip, Sparkles, Square, Undo2, X } from "lucide-react";
 import { api, ApiError, errorText } from "../api.ts";
 import type { AssistantEvent } from "../api.ts";
 import type { BuildStepId, ChatEntry, CreatorUsage, Draft, ToolLine } from "../types.ts";
+import { MAX_SAMPLE_CHARACTERS, normalizeSample } from "../../../src/creator/samples.ts";
 import { BUILD_STEPS, buildStep, nextBuildStep } from "../../../src/creator/steps.ts";
 import { NARROW, useDrag, useMedia, useOverlay, useStored } from "../ui/hooks.ts";
 import { ModelPicker, money, ToolRow, totalCost, usageText } from "../assistant/parts.tsx";
@@ -17,8 +18,11 @@ const SUGGESTIONS = [
   "What's missing?",
 ];
 
-/** Reading the draft or checking it changes nothing, so the change card leaves those out. */
-const READS = new Set(["get_draft", "check_draft", "get_example"]);
+/** Reading the draft, an example, or the sample chats, or checking the draft, changes nothing, so the change card leaves those out. */
+const READS = new Set(["get_draft", "check_draft", "get_example", "read_samples"]);
+/** A file this large is no chat export the creator could take, so it isn't read at all. */
+const MAX_SAMPLE_FILE_BYTES = 8 * 1024 * 1024;
+const SAMPLE_TYPES = ".txt,.md,.csv,.json,.log,text/plain";
 
 interface LiveRun {
   message: string;
@@ -61,10 +65,13 @@ export function AssistantPanel({ editor, draftId, launch }: { editor: DraftEdito
   const [picking, setPicking] = useState(false);
   const [server, setServer] = useState<{ model: string; keyConfigured: boolean } | null>(null);
   const controller = useRef<AbortController | null>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [sampling, setSampling] = useState(false);
   /** Whether the tab was dragged, so the click that ends a drag doesn't also open it. */
   const dragged = useRef(false);
   const { view } = editor;
   const chat = view?.chat ?? [];
+  const samples = view?.samples ?? [];
   const running = live !== null;
   const width = () => panel.current?.offsetWidth ?? 420;
   const last = chat.at(-1);
@@ -145,6 +152,45 @@ export function AssistantPanel({ editor, draftId, launch }: { editor: DraftEdito
       await new Promise((resolve) => setTimeout(resolve, 400));
     }
     await editor.reload();
+  }
+
+  /**
+   * Adds chat files for the AI creator to draw on, one at a time, stopping at
+   * the first it can't take. The server judges the limits; a file far beyond
+   * them is turned away here, before it is sent.
+   */
+  async function addSamples(files: File[]) {
+    if (files.length === 0) return;
+    setProblem(null);
+    setSampling(true);
+    try {
+      for (const file of files) {
+        const tooLong = `"${file.name}" is too long for the AI creator, which takes ${MAX_SAMPLE_CHARACTERS.toLocaleString("en-US")} characters of sample chats in all. Trim it to the conversations that show these people best.`;
+        if (file.size > MAX_SAMPLE_FILE_BYTES) throw new Error(tooLong);
+        const text = normalizeSample(await file.text());
+        if (text.length > MAX_SAMPLE_CHARACTERS) throw new Error(tooLong);
+        await editor.flush();
+        editor.adopt(await api.addSample(draftId, file.name, text));
+      }
+    } catch (error) {
+      setProblem(errorText(error));
+    } finally {
+      setSampling(false);
+      if (fileInput.current) fileInput.current.value = "";
+    }
+  }
+
+  async function removeSample(sampleId: string) {
+    setProblem(null);
+    setSampling(true);
+    try {
+      await editor.flush();
+      editor.adopt(await api.removeSample(draftId, sampleId));
+    } catch (error) {
+      setProblem(errorText(error));
+    } finally {
+      setSampling(false);
+    }
   }
 
   /** Sends a message: as the given step of a guided build, outside one (null), or as the panel's state implies. */
@@ -295,6 +341,7 @@ export function AssistantPanel({ editor, draftId, launch }: { editor: DraftEdito
                     <button key={suggestion} type="button" disabled={running || noKey} onClick={() => setText(suggestion)}>{suggestion}</button>
                   ))}
                 </div>
+                <p className="small">Have chats that sound like the people you want? Add them with <strong>Sample chats</strong> below, and it draws on their voices.</p>
               </div>
             )}
             {chat.map((entry) => (
@@ -328,6 +375,19 @@ export function AssistantPanel({ editor, draftId, launch }: { editor: DraftEdito
         {picking && <ModelPicker title="Model for the AI creator" current={chosenModel} fallback={server?.model ?? null} onPick={(id) => { setChosenModel(id); setPicking(false); }} onClose={() => setPicking(false)} />}
         <form className="assistant-input" onSubmit={(event) => { event.preventDefault(); void send(text); }}>
           {noKey && <p className="assistant-error">Set OPENROUTER_API_KEY in .env.local and restart the server to use the AI creator.</p>}
+          {samples.length > 0 && (
+            <div className="sample-files" aria-label="Sample chats">
+              {samples.map((sample) => (
+                <span key={sample.id} className="sample-file"
+                  title={`${sample.name}: ${sample.characters.toLocaleString("en-US")} characters. The AI creator reads it for inspiration; it never goes into the world or its downloads.`}>
+                  <FileText size={12} />
+                  <span className="name">{sample.name}</span>
+                  <span className="size">{shortCount(sample.characters)}</span>
+                  <button type="button" aria-label={`Remove ${sample.name}`} disabled={running || sampling} onClick={() => void removeSample(sample.id)}><X size={12} /></button>
+                </span>
+              ))}
+            </div>
+          )}
           <div className="composer">
             <textarea rows={Math.min(5, Math.max(1, text.split("\n").length))} value={text} maxLength={16000} onChange={(event) => setText(event.target.value)} onKeyDown={onKey}
               placeholder={running ? "Working…" : guided ? `Or tell it what to change in ${buildStep(guided).label.toLowerCase()}…` : starting ? "Describe the world to build…" : "Ask the AI creator…"}
@@ -344,6 +404,12 @@ export function AssistantPanel({ editor, draftId, launch }: { editor: DraftEdito
             <button type="button" onClick={() => setPicking((shown) => !shown)} aria-expanded={picking} title="Choose the model">
               {model} <ChevronDown size={11} />
             </button>
+            <button type="button" className="sample-add" aria-label="Sample chats" disabled={running || sampling || seenIntro === "no"} onClick={() => fileInput.current?.click()}
+              title={`Add chats for the AI creator to draw on: text exports of conversations, up to ${MAX_SAMPLE_CHARACTERS.toLocaleString("en-US")} characters in all. It sends them to the model when it reads them; they never go into the world or its downloads.`}>
+              <Paperclip size={11} /><span className="label">{sampling ? "Adding…" : "Sample chats"}</span>
+            </button>
+            <input ref={fileInput} type="file" accept={SAMPLE_TYPES} multiple hidden aria-label="Sample chat files"
+              onChange={(event) => void addSamples([...(event.target.files ?? [])])} />
             {empty && guided === null && !running && (
               <label className="step-toggle" title="Build a new world in five steps, approving each">
                 <input type="checkbox" checked={stepwise === "yes"} onChange={(event) => setStepwise(event.target.checked ? "yes" : "no")} />
@@ -423,4 +489,9 @@ function Turn({ entry, undo, undone, undoing }: { entry: ChatEntry; undo: (() =>
       )}
     </>
   );
+}
+
+/** A length in characters, briefly: 840, or 42k. */
+function shortCount(characters: number): string {
+  return characters < 1000 ? `${characters}` : `${Math.round(characters / 1000)}k`;
 }

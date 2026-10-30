@@ -224,6 +224,18 @@ export const migrations: readonly Migration[] = [
       `);
     },
   },
+  {
+    version: 10,
+    name: "draft_samples",
+    async up(client, ns) {
+      await client.query(`
+        -- Sample chats the director gave the AI creator for a draft. Director
+        -- state beside the draft like its chat log: not part of the world, and
+        -- not exported; the application validates its shape.
+        ALTER TABLE ${ns}.world_drafts ADD COLUMN samples jsonb NOT NULL DEFAULT '[]'::jsonb;
+      `);
+    },
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = migrations.at(-1)!.version;

@@ -122,6 +122,8 @@ const MAX_BODY_BYTES = 512 * 1024;
 /** A world's whole history can be large; only an import may send this much. */
 const MAX_IMPORT_BYTES = 16 * 1024 * 1024;
 const MAX_FORM_BYTES = 64 * 1024;
+/** A sample chat file's characters can take up to four bytes each, and more escaped in JSON. */
+const MAX_SAMPLE_BYTES = 1024 * 1024;
 const MODEL_CACHE_MS = 10 * 60_000;
 
 const CONTENT_TYPES: Record<string, string> = {
@@ -162,6 +164,7 @@ const bodies = {
   createDraft: z.object({ adventureId: z.string().optional(), name: z.string().max(100).optional() }),
   saveDraft: z.object({ draft: z.unknown(), expectedRevision: z.number().int().positive() }),
   publishDraft: z.object({ worldId: z.string(), expectedRevision: z.number().int().positive() }),
+  addSample: z.object({ name: z.string(), text: z.string() }),
   assistant: z.object({
     message: z.string().trim().min(1).max(16_000),
     model: z.string().max(200).optional(),
@@ -759,6 +762,13 @@ export function createApp(options: AppOptions): (request: IncomingMessage, respo
         return json({ ok: true });
       case "POST drafts/:world/assistant":
         return assistant(request, response, worldId!);
+      case "POST drafts/:world/samples": {
+        const body = parseBody(bodies.addSample, await readJson(request, MAX_SAMPLE_BYTES));
+        return json(await drafts.addSample(worldId!, body), 201);
+      }
+      case "DELETE drafts/:world/samples/:character":
+        await readJson(request);
+        return json(await drafts.removeSample(worldId!, characterId!));
       case "POST drafts/:world/publish": {
         const body = parseBody(bodies.publishDraft, await readJson(request));
         return json(await drafts.publish(worldId!, body.worldId, body.expectedRevision));
