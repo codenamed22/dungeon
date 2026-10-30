@@ -23,7 +23,7 @@ export const BUILD_STEPS: readonly BuildStep[] = [
     label: "Story",
     task: "Set the title, premise, rules, pace, narrator style, and limits on open-ended actions with set_world, and make "
       + "nothing else yet. In your reply, outline the rest in a line each: the places, the main and supporting characters, "
-      + "the challenges and threats, and the endings you have in mind.",
+      + "the challenges and threats, any hidden tracks, and the endings you have in mind.",
     tools: [],
   },
   {
@@ -43,8 +43,10 @@ export const BUILD_STEPS: readonly BuildStep[] = [
   {
     id: "challenges",
     label: "Challenges",
-    task: "Add the threats, then the challenges that refer to them, and block or open ways as they need.",
-    tools: ["upsert_threat", "upsert_challenge", "upsert_item", "connect_places", "upsert_track"],
+    task: "Add any hidden tracks first, and give each character who takes part a starting value below every threshold with "
+      + "upsert_character. Then add the threats, then the challenges that refer to them, with the tracks each one moves, and "
+      + "block or open ways as they need. Lock a challenge that a threshold should open, then list it under that threshold.",
+    tools: ["upsert_track", "upsert_character", "upsert_threat", "upsert_challenge", "upsert_item", "connect_places"],
   },
   {
     id: "endings",

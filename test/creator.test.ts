@@ -20,9 +20,9 @@ import {
   MAX_SAMPLE_CHARACTERS, normalizeSample, SAMPLE_PART_CHARACTERS, sampleListing, sampleParts, sampleTextProblem,
 } from "../src/creator/samples.ts";
 import type { DraftSample } from "../src/creator/samples.ts";
-import { buildStep, EVERY_STEP_TOOLS, nextBuildStep } from "../src/creator/steps.ts";
+import { BUILD_STEPS, buildStep, EVERY_STEP_TOOLS, nextBuildStep } from "../src/creator/steps.ts";
 import type { BuildStepId } from "../src/creator/steps.ts";
-import { creatorExamples, creatorToolDefinitions, runCreatorTool } from "../src/creator/tools.ts";
+import { CREATOR_TOOL_NAMES, creatorExamples, creatorToolDefinitions, runCreatorTool } from "../src/creator/tools.ts";
 import { AdventureEngine } from "../src/engine.ts";
 import { EngineError, validateWorld, worldProblems } from "../src/model.ts";
 import type { WorldSeed } from "../src/model.ts";
@@ -563,6 +563,27 @@ test("a guided build runs one step at a time, with only that step's tools", asyn
   assert.equal(creatorToolDefinitions("story").length, EVERY_STEP_TOOLS.length);
   assert.doesNotMatch(creatorSystemPrompt({}, []), /Building step by step/);
   assert.deepEqual([nextBuildStep("story")?.id, nextBuildStep("endings")], ["places", null]);
+});
+
+test("a guided build's challenges step can make a hidden track that works", () => {
+  for (const step of BUILD_STEPS) {
+    for (const name of [...EVERY_STEP_TOOLS, ...step.tools ?? []]) assert.ok(CREATOR_TOOL_NAMES.includes(name), `${step.label} names ${name}`);
+  }
+  // The characters exist before tracks do, so this step gives them their starting values,
+  // and the thresholds that unlock a challenge come after it.
+  let draft = lighthouse();
+  for (const [name, args] of [
+    ["upsert_track", { name: "Trust", max: 10, thresholds: [{ at: 5 }] }],
+    ["upsert_character", { id: "ada", trackValues: { trust: 2 } }],
+    ["upsert_challenge", { name: "Win Wick over", placeId: "stair", ability: "wisdom", difficulty: "moderate", minutes: 3, adjustsTracks: [{ trackId: "trust", delta: 3 }] }],
+    ["upsert_challenge", { name: "Hear the secret", placeId: "stair", ability: "wisdom", difficulty: "easy", minutes: 2, locked: true }],
+    ["upsert_track", { id: "trust", thresholds: [{ at: 5, guidance: "Wick speaks freely.", unlocksChallengeIds: ["hear-the-secret"] }] }],
+  ] as const) {
+    const outcome = runCreatorTool(draft, name, JSON.stringify(args), "challenges");
+    assert.ok(outcome.ok, `${name}: ${outcome.summary}`);
+    draft = outcome.draft;
+  }
+  assert.deepEqual(draftProblems(draft).filter((problem) => problem.section === "tracks" || /track/.test(problem.message)), []);
 });
 
 test("the AI creator stops at its limits, on cancellation, and on provider errors, keeping what it saved", async () => {

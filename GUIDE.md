@@ -73,8 +73,8 @@ operations as the forms, so you see each change, and you can undo each
 message's changes.
 
 In an empty draft, **Step by step** has the AI creator build the world in five
-steps: story, places, characters, challenges and threats, and endings. It stops
-after each one for your approval.
+steps: story, places, characters, challenges (with threats and hidden tracks),
+and endings. It stops after each one for your approval.
 
 **Sample chats** give the AI creator real voices to work from. Under its
 message box, add text exports of conversations, such as a group chat, a

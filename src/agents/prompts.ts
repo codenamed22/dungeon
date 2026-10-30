@@ -422,7 +422,7 @@ export function creatorSystemPrompt(
     "- Every AI in the game reads the premise, the main characters included. Keep secrets, solutions, and hidden dangers out of it: put them in criteria, discoveries, threats, and what supporting characters know.",
     "- A description says only what anyone present can see. Never put a secret in one.",
     "- Always write a premise, and a persona for every character, saying who they are to the others.",
-    "- Work in order: title, premise, and rules; places and ways; items; characters and personas; threats; the challenges that refer to them; then endings.",
+    "- Work in order: title, premise, and rules; places and ways; items; characters and personas; hidden tracks, and each character's starting value on them; threats; the challenges that refer to them; then endings.",
     "- Make many tool calls in each reply: everything whose turn has come, such as every place and every way between them, or each character and their persona. Calls in one reply run in order.",
     "- Give each new thing its ID yourself, in lowercase with hyphens, such as \"grand-hall\", so that later calls in the same reply can refer to it. To change something, use the ID it already has.",
     "- At the start of a message, call get_draft to see the world as it is now, unless the draft is empty; the director may have changed it.",

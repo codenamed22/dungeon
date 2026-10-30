@@ -228,10 +228,12 @@ What you can do:
   they are sent to the creator's model when it reads them. Remove one with its
   ×; deleting the draft deletes them.
 - **Step by step.** In an empty draft, the AI creator builds the world with you
-  in five steps (story, places, characters, challenges and threats, endings),
-  and stops after each one for your approval. Each step can use only its own
-  tools: the story step sets the title, premise, rules, and narrator, and
-  outlines the rest in its reply. Between steps, **Continue** runs the next
+  in five steps (story, places, characters, challenges, endings), and stops
+  after each one for your approval. Each step can use only its own tools: the
+  story step sets the title, premise, rules, and narrator, and outlines the
+  rest in its reply. The challenges step also adds the threats and any hidden
+  tracks, with each character's starting value on them, since the characters
+  exist by then. Between steps, **Continue** runs the next
   step, and anything you type changes the current one. **Build the rest at
   once** finishes the world in one message, and **Leave step by step** goes
   back to free conversation. A step stopped by Stop or a limit offers

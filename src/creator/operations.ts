@@ -484,7 +484,7 @@ export const upsertEndingInput = z.strictObject({
   text: z.string().trim().min(1).max(MAX_ENDING_LENGTH).optional().describe(
     "The closing text everyone reads when the story ends this way, in one to three sentences; required for a new ending",
   ),
-  challengeId: ref.optional().describe("End the story when this challenge succeeds or fails (see outcome). Give this or threatId."),
+  challengeId: ref.optional().describe("End the story when this challenge succeeds or fails (see outcome). Give this or threatId or trackId."),
   outcome: z.enum(["success", "failure"]).optional().describe("With challengeId: whether its success or its failure ends the story (default success)"),
   threatId: ref.optional().describe("End the story when this threat happens. Give this or challengeId or trackId."),
   trackId: ref.optional().describe("End the story when a character reaches thresholdId on this track. Give this with thresholdId."),

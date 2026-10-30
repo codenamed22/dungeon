@@ -114,8 +114,8 @@ const tools: readonly CreatorTool[] = [
     + "the stat it tests (with dice), and what success and failure do.", upsertChallengeInput, upsertChallenge),
   tool("upsert_threat", "Add something the world does on its own clock, or that a challenge's outcome sets off; or change one.",
     upsertThreatInput, upsertThreat),
-  tool("upsert_ending", "Add a way the story can end, or change one: a challenge's success or failure, or a threat happening, "
-    + "ends it with closing text everyone reads.", upsertEndingInput, upsertEnding),
+  tool("upsert_ending", "Add a way the story can end, or change one: a challenge's success or failure, a threat happening, "
+    + "or someone reaching a track's threshold ends it with closing text everyone reads.", upsertEndingInput, upsertEnding),
   tool("upsert_track", "Add a hidden track, a number per character that only the narrator, referee and director see, or change one. "
     + "Challenges move it, and its thresholds change the world once reached: unlock challenges or ways, reveal a private fact, "
     + "set threats off, change stats, or end the story.", upsertTrackInput, upsertTrack),

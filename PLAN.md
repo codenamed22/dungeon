@@ -607,6 +607,24 @@
 - Development and tests use local PostgreSQL or a Neon development branch, not the
   `production` branch.
 
+- **Guided build and hidden tracks: done locally.** Tracks arrived after the
+  guided build, and the two didn't fit.
+  - **The gap:** `upsert_track` was open only in the challenges step, which
+    couldn't call `upsert_character`. The characters step couldn't refer to a
+    track that didn't exist yet. So no character got a starting value, and a
+    character without one is never moved: every track built step by step stayed
+    dead. Only the endings step, which opens every tool, could fix it. Nothing
+    told the model to.
+  - **The fix:** the challenges step also opens `upsert_character`. Its task
+    gives the order the tools need: tracks and starting values first, then
+    threats and challenges with the tracks they move, then locking challenges
+    and listing them under the threshold that opens them. The story step's
+    outline, the creator's work-in-order line, and `upsert_ending`'s
+    description now mention tracks.
+  - **Test:** a test builds a working track with only the challenges step's
+    tools, and checks that every tool a step names exists. It fails on the old
+    steps.
+
 ## Product direction
 
 Build a director-mode adventure engine with AI characters, not an unrestricted
