@@ -764,6 +764,9 @@ export function createApp(options: AppOptions): (request: IncomingMessage, respo
         await readJson(request);
         await drafts.delete(worldId!);
         return json({ ok: true });
+      case "DELETE drafts/:world/chat/:character":
+        await readJson(request);
+        return json(await drafts.deleteFrom(worldId!, characterId!));
       case "POST drafts/:world/assistant":
         return assistant(request, response, worldId!);
       case "POST drafts/:world/samples": {

@@ -860,6 +860,22 @@ test("drafts in the database, and publishing one as a world", {
       assert.equal((await call("GET", `/api/drafts/${draft.id}`)).body.busy, false);
     });
 
+    await t.test("deleting a creator message truncates its chat and later messages, but keeps draft changes", async () => {
+      const created = (await call("POST", "/api/drafts", {})).body;
+      const originalChat = [{ id: "first" }, { id: "second" }, { id: "third" }];
+      await engine.updateDraft(created.id, created.revision, { draft: lighthouse(), chat: originalChat });
+      const before = (await call("GET", `/api/drafts/${created.id}`)).body;
+      const removed = await call("DELETE", `/api/drafts/${created.id}/chat/second`, {});
+      assert.equal(removed.status, 200);
+      assert.deepEqual(removed.body.chat, [{ id: "first" }]);
+      assert.deepEqual(removed.body.draft, before.draft);
+      assert.equal(removed.body.revision, before.revision);
+
+      const missing = await call("DELETE", `/api/drafts/${created.id}/chat/missing`, {});
+      assert.equal(missing.status, 404);
+      assert.deepEqual((await call("GET", `/api/drafts/${created.id}`)).body.chat, [{ id: "first" }]);
+    });
+
     await t.test("while the AI creator works nothing else changes the draft, and leaving keeps what it did", async () => {
       const draft = (await call("POST", "/api/drafts", {})).body;
       handler = async (body, signal) => (body.messages.length > 3
@@ -894,6 +910,7 @@ test("drafts in the database, and publishing one as a world", {
       const release = service.claim(draft.id);
       assert.equal((await service.get(draft.id)).busy, true);
       await assert.rejects(service.save(draft.id, lighthouse(), 1), errorCode("DRAFT_BUSY"));
+      await assert.rejects(service.deleteFrom(draft.id, "message"), errorCode("DRAFT_BUSY"));
       await assert.rejects(service.publish(draft.id, "busy-world", 1), errorCode("DRAFT_BUSY"));
       await assert.rejects(service.delete(draft.id), errorCode("DRAFT_BUSY"));
       assert.throws(() => service.claim(draft.id), errorCode("DRAFT_BUSY"));

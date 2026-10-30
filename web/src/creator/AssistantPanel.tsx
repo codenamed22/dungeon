@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
-import { ArrowUp, Check, ChevronDown, CircleAlert, FileText, Paperclip, Sparkles, Square, Undo2, X } from "lucide-react";
+import { ArrowUp, Check, ChevronDown, CircleAlert, FileText, Paperclip, Sparkles, Square, Trash2, Undo2, X } from "lucide-react";
 import { api, ApiError, errorText } from "../api.ts";
 import type { AssistantEvent } from "../api.ts";
 import { REASONING_EFFORTS } from "../../../src/agents/models.ts";
@@ -58,6 +58,7 @@ export function AssistantPanel({ editor, draftId, launch }: { editor: DraftEdito
   const [befores, setBefores] = useState<Map<string, Draft>>(() => new Map());
   const [undone, setUndone] = useState<Set<string>>(() => new Set());
   const [undoing, setUndoing] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
   const [seenIntro, setSeenIntro] = useStored<"yes" | "no">("dungeons.creatorIntro", "no");
   const [chosenModel, setChosenModel] = useStored<string>("dungeons.creatorModel", "");
   const [chosenEffort, setChosenEffort] = useStored<string>("dungeons.creatorEffort", "");
@@ -288,6 +289,24 @@ export function AssistantPanel({ editor, draftId, launch }: { editor: DraftEdito
     }
   }
 
+  async function deleteFrom(entry: ChatEntry) {
+    if (running || deleting !== null) return;
+    if (!window.confirm("Delete this message and all newer creator messages from chat history? Changes already made to the draft will stay.")) return;
+    setDeleting(entry.id);
+    setProblem(null);
+    try {
+      await editor.flush();
+      const updated = await api.deleteCreatorMessage(draftId, entry.id);
+      editor.adopt(updated);
+      setBefores((current) => new Map([...current].filter(([id]) => updated.chat.some((saved) => saved.id === id))));
+      setUndone((current) => new Set([...current].filter((id) => updated.chat.some((saved) => saved.id === id))));
+    } catch (error) {
+      setProblem(errorText(error));
+    } finally {
+      setDeleting(null);
+    }
+  }
+
   function onKey(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Enter" && !event.shiftKey && !narrow && !event.nativeEvent.isComposing) {
       event.preventDefault();
@@ -350,7 +369,8 @@ export function AssistantPanel({ editor, draftId, launch }: { editor: DraftEdito
             {chat.map((entry) => (
               <Turn key={entry.id} entry={entry}
                 undo={befores.has(entry.id) && !undone.has(entry.id) && view?.revision === entry.revisionAfter && !running ? () => void undo(entry) : null}
-                undone={undone.has(entry.id)} undoing={undoing === entry.id} />
+                undone={undone.has(entry.id)} undoing={undoing === entry.id} deleteMessage={() => void deleteFrom(entry)}
+                deleting={running || deleting !== null} deletingThis={deleting === entry.id} />
             ))}
             {guided && !live && (
               <StepCard current={guided} disabled={noKey} unfinished={Boolean(last!.stopped || last!.error)}
@@ -506,11 +526,19 @@ function StepCard({ current, disabled, unfinished, onRetry, onContinue, onFinish
   );
 }
 
-function Turn({ entry, undo, undone, undoing }: { entry: ChatEntry; undo: (() => void) | null; undone: boolean; undoing: boolean }) {
+function Turn({ entry, undo, undone, undoing, deleteMessage, deleting, deletingThis }: {
+  entry: ChatEntry; undo: (() => void) | null; undone: boolean; undoing: boolean;
+  deleteMessage(): void; deleting: boolean; deletingThis: boolean;
+}) {
   const [showSteps, setShowSteps] = useState(false);
   const changes = entry.tools.filter((line) => line.ok && !READS.has(line.name));
   const failed = entry.tools.filter((line) => !line.ok).length;
   const changed = entry.revisionAfter !== entry.revisionBefore;
+  const deleteButton = (
+    <button type="button" className="small" disabled={deleting} onClick={deleteMessage} title="Delete this and all newer creator messages">
+      <Trash2 size={14} />{deletingThis ? "Deleting…" : "Delete from here"}
+    </button>
+  );
   return (
     <>
       {entry.step && <StepLabel step={entry.step} />}
@@ -518,6 +546,12 @@ function Turn({ entry, undo, undone, undoing }: { entry: ChatEntry; undo: (() =>
       {entry.reply && <p className="bubble assistant">{entry.reply}</p>}
       {entry.stopped && <p className="assistant-note"><Square size={11} /> {entry.stopped}</p>}
       {entry.error && <p className="assistant-error"><CircleAlert size={14} /> {entry.error}</p>}
+      {!changed && entry.tools.length === 0 && (
+        <div className="change-card">
+          <div className="row"><strong>Message</strong>{deleteButton}</div>
+          <span className="muted small">{usageText(entry.usage)} · {entry.model}</span>
+        </div>
+      )}
       {(changed || entry.tools.length > 0) && (
         <div className={`change-card ${undone ? "undone" : ""}`}>
           <div className="row">
@@ -525,6 +559,7 @@ function Turn({ entry, undo, undone, undoing }: { entry: ChatEntry; undo: (() =>
             {undo && (
               <button type="button" className="small" disabled={undoing} onClick={undo}><Undo2 size={14} />Undo</button>
             )}
+            {deleteButton}
           </div>
           {entry.tools.length > 0 && (
             <button type="button" className="text-button small" aria-expanded={showSteps} onClick={() => setShowSteps((shown) => !shown)}>

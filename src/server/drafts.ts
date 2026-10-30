@@ -79,6 +79,22 @@ export class DraftService {
     return this.view(await this.engine.getDraft(id));
   }
 
+  /** Deletes one chat turn and all newer turns, leaving the draft unchanged. */
+  async deleteFrom(id: string, entryId: string): Promise<DraftView> {
+    const release = this.claim(id);
+    try {
+      const record = await this.engine.getDraft(id);
+      if (record.publishedAt !== null) throw new EngineError("REQUEST_CONFLICT", `This draft already became the world ${record.worldId}`);
+      const chat = record.chat as ChatEntry[];
+      const index = chat.findIndex((entry) => entry.id === entryId);
+      if (index < 0) throw new EngineError("NOT_FOUND", `No creator message ${entryId}`);
+      const saved = await this.engine.updateDraft(id, record.revision, { chat: chat.slice(0, index) });
+      return this.view(saved);
+    } finally {
+      release();
+    }
+  }
+
   /** Replaces the draft, if it is still at the revision the editor last saw. */
   async save(id: string, draft: unknown, expectedRevision: number): Promise<DraftView> {
     this.requireIdle(id);

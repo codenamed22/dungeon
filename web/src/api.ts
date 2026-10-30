@@ -174,6 +174,10 @@ export const api = {
   drafts: () => request<{ drafts: DraftSummary[] }>("GET", "/drafts"),
   createDraft: (body: { adventureId?: string; name?: string }) => request<DraftView>("POST", "/drafts", body),
   draft: (draftId: string) => request<DraftView>("GET", draftAt(draftId)),
+  /** Deletes a creator chat turn and everything after it, while keeping draft changes. */
+  deleteCreatorMessage: (draftId: string, entryId: string) => request<DraftView>(
+    "DELETE", `${draftAt(draftId)}/chat/${encodeURIComponent(entryId)}`, {},
+  ),
   saveDraft: (draftId: string, draft: Draft, expectedRevision: number) => request<DraftView>("PUT", draftAt(draftId), { draft, expectedRevision }),
   deleteDraft: (draftId: string) => request<{ ok: true }>("DELETE", draftAt(draftId), {}),
   addSample: (draftId: string, name: string, text: string) => request<DraftView>("POST", `${draftAt(draftId)}/samples`, { name, text }),
