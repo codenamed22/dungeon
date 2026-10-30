@@ -16,7 +16,9 @@ import {
   upsertCharacter, upsertEnding, upsertItem, upsertPlace, upsertThreat,
 } from "../src/creator/operations.ts";
 import type { Draft, OperationResult } from "../src/creator/operations.ts";
-import { normalizeSample, SAMPLE_PART_CHARACTERS, sampleInfo, sampleParts, sampleTextProblem } from "../src/creator/samples.ts";
+import {
+  MAX_SAMPLE_CHARACTERS, normalizeSample, SAMPLE_PART_CHARACTERS, sampleListing, sampleParts, sampleTextProblem,
+} from "../src/creator/samples.ts";
 import type { DraftSample } from "../src/creator/samples.ts";
 import { buildStep, EVERY_STEP_TOOLS, nextBuildStep } from "../src/creator/steps.ts";
 import type { BuildStepId } from "../src/creator/steps.ts";
@@ -375,9 +377,9 @@ test("the AI creator can read every bundled adventure as an example, and its ins
 const sample = (name: string, text: string): DraftSample => ({ id: name, name, text, characters: text.length, addedAt: "2026-10-30T00:00:00.000Z" });
 
 test("sample chats come in parts that end at line breaks, and the AI creator reads them by file and part", () => {
-  const long = `${"a".repeat(99)}\n`.repeat(600);
+  const long = `${"a".repeat(99)}\n`.repeat(SAMPLE_PART_CHARACTERS * 0.024);
   const parts = sampleParts(long);
-  assert.deepEqual(parts.map((part) => part.length), [25_000, 25_000, 10_000]);
+  assert.deepEqual(parts.map((part) => part.length), [SAMPLE_PART_CHARACTERS, SAMPLE_PART_CHARACTERS, SAMPLE_PART_CHARACTERS * 0.4]);
   assert.equal(parts.join(""), long);
   const emoji = sampleParts(`${"b".repeat(SAMPLE_PART_CHARACTERS - 1)}😀 tail`);
   assert.deepEqual([emoji[0]!.length, emoji[1]], [SAMPLE_PART_CHARACTERS - 1, "😀 tail"], "an emoji is never split");
@@ -408,8 +410,8 @@ test("sample chats come in parts that end at line breaks, and the AI creator rea
   assert.deepEqual(names("story", true).sort(), [...EVERY_STEP_TOOLS, "read_samples"].sort());
 
   // The instructions list them, and say how to use them, only when there are some.
-  const prompt = creatorSystemPrompt({}, [], undefined, samples.map(sampleInfo));
-  assert.match(prompt, /\n1\. "group\.txt": 60,000 characters, 3 parts\n2\. "dm\.txt": 25 characters, 1 part\n/);
+  const prompt = creatorSystemPrompt({}, [], undefined, samples.map(sampleListing));
+  assert.match(prompt, new RegExp(`\\n1\\. "group\\.txt": ${long.length.toLocaleString("en-US")} characters, 3 parts\\n2\\. "dm\\.txt": 25 characters, 1 part\\n`));
   assert.match(prompt, /Base characters on the people in them only if the director asks\. Leave out personal details/);
   assert.doesNotMatch(creatorSystemPrompt(), /Sample chats/);
 });
@@ -594,6 +596,12 @@ test("the AI creator stops at its limits, on cancellation, and on provider error
   ));
   assert.deepEqual([costly.run.usage.calls, costly.run.usage.cost, costly.saved.length], [1, null, 1]);
   assert.match(costly.run.stopped!, /spending limit/);
+  // With the cost reported, the cost is the cap, however many tokens a long context takes.
+  const priced = { prompt_tokens: 600_000, completion_tokens: 10, cost: 0.03 };
+  const long = await creatorRun(async (body) => (body.messages.at(-1).role === "tool"
+    ? completion({ content: "Added a hall." }, priced)
+    : completion({ tool_calls: [toolCall("p", "upsert_place", { name: "Hall" })] }, priced)));
+  assert.deepEqual([long.run.usage.inputTokens, long.run.stopped, long.run.reply], [1_200_000, undefined, "Added a hall."]);
 
   const controller = new AbortController();
   let calls = 0;
@@ -878,8 +886,9 @@ test("drafts in the database, and publishing one as a world", {
       assert.equal(added.status, 201);
       assert.equal(added.body.revision, 1, "samples aren't the draft, so its revision stays");
       const characters = "Sam: did you feed the cat\nAlex: CANARY-CHAT obviously".length;
-      assert.deepEqual(added.body.samples.map(({ name, characters, parts }: Record<string, unknown>) => ({ name, characters, parts })),
-        [{ name: "group chat.txt", characters, parts: 1 }]);
+      assert.deepEqual(added.body.samples.map(({ name, characters }: Record<string, unknown>) => ({ name, characters })),
+        [{ name: "group chat.txt", characters }]);
+      assert.equal((await engine.getDraft(draft.id)).samples.some((entry) => "text" in (entry as object)), false, "a draft is read without the text");
       assert.doesNotMatch(JSON.stringify((await call("GET", `/api/drafts/${draft.id}`)).body), /CANARY-CHAT/);
 
       let offered: string[] = [];
@@ -911,10 +920,20 @@ test("drafts in the database, and publishing one as a world", {
       for (let index = 0; index < 4; index += 1) await service.addSample(draft.id, { name: `chat-${index}.txt`, text: "Hi." });
       await refused(draft.id, "Hi.", /^A draft can have 5 sample files; remove one first\.$/);
       const roomy = await service.create({});
-      await refused(roomy.id, "x".repeat(100_001), /^"more\.txt" has 100,001 characters, and the samples can have 100,000 in all\. Trim it/);
-      await service.addSample(roomy.id, { name: "big.txt", text: "x".repeat(60_000) });
-      await refused(roomy.id, "y".repeat(50_000), /can have 100,000 in all \(40,000 left\)/);
-      assert.deepEqual((await service.addSample(roomy.id, { name: "fits.txt", text: "y".repeat(40_000) })).samples.map((entry) => entry.parts), [3, 2]);
+      await refused(roomy.id, "x".repeat(MAX_SAMPLE_CHARACTERS + 1), /^"more\.txt" has 800,001 characters, and the samples can have 800,000 in all\. Trim it/);
+      await service.addSample(roomy.id, { name: "big.txt", text: "x".repeat(600_000) });
+      await refused(roomy.id, "y".repeat(300_000), /can have 800,000 in all \(200,000 left\)/);
+      assert.deepEqual((await service.addSample(roomy.id, { name: "fits.txt", text: "y".repeat(200_000) })).samples.map((entry) => entry.characters), [600_000, 200_000]);
+
+      // A model whose context can't hold them all is refused before anything starts.
+      let started = false;
+      const small = { model: "small/model", contextLength: 300_000, complete: async () => assert.fail("no call") };
+      await assert.rejects(service.assist(roomy.id, {
+        message: "Use my chats.", expectedRevision: 1, chat: small, signal: new AbortController().signal, onStart: () => { started = true; }, onEvent: () => {},
+      }), (error) => errorCode("INVALID_INPUT")(error)
+        && /^The sample chats come to about 266,667 tokens, and with the rest of the conversation that's more than small\/model can take \(300,000 tokens\)\. Choose a model with a larger context/.test((error as Error).message));
+      assert.equal(started, false);
+      assert.equal((await service.get(roomy.id)).busy, false);
 
       // Nothing changes them while the AI creator works; removing one leaves the rest.
       const release = service.claim(draft.id);

@@ -9,6 +9,8 @@ import type { ModelUsage } from "./provider.ts";
 
 export interface ChatModel {
   readonly model: string;
+  /** The most tokens the model takes in one call, input and output together, if known. */
+  readonly contextLength?: number | null;
   complete(messages: readonly unknown[], tools: readonly unknown[], signal?: AbortSignal): Promise<ChatReply>;
 }
 
@@ -152,7 +154,8 @@ export async function runToolLoop(options: {
       }
       await options.afterRound?.(changed);
       if (stopped) break;
-      if ((usage.cost !== null && usage.cost >= limits.maxCost) || usage.inputTokens + usage.outputTokens >= limits.maxTokens) {
+      // The cost caps a message; tokens cap it only when a call didn't report its cost.
+      if (usage.cost === null ? usage.inputTokens + usage.outputTokens >= limits.maxTokens : usage.cost >= limits.maxCost) {
         stopped = "Stopped at the spending limit for one message.";
         break;
       }

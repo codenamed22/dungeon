@@ -565,7 +565,7 @@
 - **Sample chats for the AI creator: done locally.**
   - **Adding them:** the director adds text files of conversations, such as a
     group chat's export, for the AI creator to draw on. A draft holds up to 5
-    files and 100,000 characters in all.
+    files and 800,000 characters in all, about 270,000 tokens.
   - **Storage:** the files live in a new `samples` column beside the draft
     (migration 10), like its chat. Adding one leaves the draft's revision alone.
     The browser sees only names and sizes, and downloads and the world leave
@@ -574,10 +574,20 @@
     use them. It borrows voices, concerns, relationships, and situations; it
     bases characters on the people only if asked; and it leaves out personal
     details.
-  - **Reading:** `read_samples` returns a part of up to 25,000 characters at a
+  - **Reading:** `read_samples` returns a part of up to 100,000 characters at a
     time. Parts end at a line break, never inside an emoji. The tool is offered
     only when there are files, and in every step of a guided build. Its reads
-    don't count as changes.
+    don't count as changes. Only `assist` loads the text, and draft reads leave it out.
+  - **Context:** each tool result is resent with every later call, so before
+    the creator starts, `assist` checks the model's catalog `context_length`.
+    If the samples, at about 3 characters a token, plus 60,000 tokens don't fit,
+    it refuses and names the model and its context. The default model has
+    1,048,576 tokens. We cap only output, at 16,000 tokens a call.
+  - **Spending cap:** the 400,000-token cap used to count every call's input,
+    so a message reading large samples stopped after a few calls even though
+    they cost only a few cents. It now applies only when a call doesn't report
+    its cost. Otherwise the 0.50-credit cap decides, as the README already
+    said.
   - **Panel:** a **Sample chats** button (a paperclip on phones) with
     removable chips. A file far over the limit is refused in the browser, and
     the server refuses an empty file, one that isn't text, a sixth file, or one
@@ -587,7 +597,8 @@
   251 tests pass. Headless Chrome against a simulated creator at 1440 px and
   390 px checked these:
   - adding a file, which showed as a chip while the revision stayed 1;
-  - refusing a 150,000-character file and a binary one;
+  - accepting a 150,000-character file, and refusing a 900,000-character file
+    and a binary one;
   - the creator reading the file, with "No changes" on its card;
   - removing the file;
   - the phone row on one line.

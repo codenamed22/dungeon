@@ -559,12 +559,15 @@ export class OpenRouterChat {
   private readonly capabilities: ModelCapabilities;
   private readonly effort: string;
   private readonly connection: Connection;
+  /** The most tokens the model takes in one call, as OpenRouter's catalog says. */
+  readonly contextLength: number | null;
 
-  private constructor(settings: ChatSettings, capabilities: ModelCapabilities, effort: string) {
+  private constructor(settings: ChatSettings, capabilities: ModelCapabilities, effort: string, contextLength: number | null) {
     this.settings = settings;
     this.capabilities = capabilities;
     this.effort = effort;
     this.connection = connectionOf(settings);
+    this.contextLength = contextLength;
   }
 
   /** Checks the model against OpenRouter's catalog: it must exist and call tools. */
@@ -575,7 +578,7 @@ export class OpenRouterChat {
     if (!capabilities.tools) {
       throw new ProviderConfigError(`${settings.model} cannot call tools, which the AI creator needs. Choose another model.`);
     }
-    return new OpenRouterChat(settings, capabilities, resolveEffort(settings.effort, capabilities));
+    return new OpenRouterChat(settings, capabilities, resolveEffort(settings.effort, capabilities), model.context_length ?? null);
   }
 
   get model(): string {

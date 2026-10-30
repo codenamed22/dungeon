@@ -21,7 +21,7 @@ const SUGGESTIONS = [
 /** Reading the draft, an example, or the sample chats, or checking the draft, changes nothing, so the change card leaves those out. */
 const READS = new Set(["get_draft", "check_draft", "get_example", "read_samples"]);
 /** A file this large is no chat export the creator could take, so it isn't read at all. */
-const MAX_SAMPLE_FILE_BYTES = 8 * 1024 * 1024;
+const MAX_SAMPLE_FILE_BYTES = 16 * 1024 * 1024;
 const SAMPLE_TYPES = ".txt,.md,.csv,.json,.log,text/plain";
 
 interface LiveRun {

@@ -3,7 +3,7 @@ import type { AssistantLimits, AssistantUsage, ChatModel, LoopEvent, ToolLine } 
 import { creatorSystemPrompt, frameOf } from "../agents/prompts.ts";
 import { draftProblems } from "./operations.ts";
 import type { Draft, DraftProblem } from "./operations.ts";
-import { sampleInfo } from "./samples.ts";
+import { sampleListing } from "./samples.ts";
 import type { DraftSample } from "./samples.ts";
 import { creatorExamples, creatorToolDefinitions, runCreatorTool, SAMPLE_TOOL } from "./tools.ts";
 import type { BuildStepId } from "./steps.ts";
@@ -62,7 +62,7 @@ function draftStatus(draft: Draft): string {
 function conversation(
   draft: Draft, history: readonly CreatorTurn[], message: string, step: BuildStepId | undefined, samples: readonly DraftSample[],
 ): unknown[] {
-  const listings = samples.map(sampleInfo);
+  const listings = samples.map(sampleListing);
   const messages: unknown[] = [{ role: "system", content: creatorSystemPrompt(frameOf(draft.cast, draft.seed), creatorExamples(), step, listings) }];
   for (const turn of history.slice(-HISTORY_TURNS)) {
     const changes = turn.tools.filter((line) => line.ok && !READS.has(line.name));

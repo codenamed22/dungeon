@@ -5,7 +5,8 @@ import type { ChatModel, CreatorEvent, CreatorLimits, CreatorUsage, ToolLine } f
 import { blankDraft, draftProblems, draftSchema, publishable, slugify } from "../creator/operations.ts";
 import type { Draft, DraftProblem } from "../creator/operations.ts";
 import {
-  MAX_SAMPLE_CHARACTERS, MAX_SAMPLE_NAME_LENGTH, MAX_SAMPLES, normalizeSample, sampleInfo, sampleTextProblem,
+  MAX_SAMPLE_CHARACTERS, MAX_SAMPLE_NAME_LENGTH, MAX_SAMPLES, normalizeSample, SAMPLE_CONTEXT_RESERVE, sampleInfo, sampleTextProblem,
+  sampleTokens,
 } from "../creator/samples.ts";
 import type { DraftSample, SampleInfo } from "../creator/samples.ts";
 import type { BuildStepId } from "../creator/steps.ts";
@@ -100,7 +101,7 @@ export class DraftService {
     const sample: DraftSample = { id: randomBytes(4).toString("hex"), name, text, characters: text.length, addedAt: new Date().toISOString() };
     const added = await this.engine.addDraftSample(id, sample, { maxCount: MAX_SAMPLES, maxCharacters: MAX_SAMPLE_CHARACTERS });
     if (added) return this.view(added);
-    const samples = (await this.engine.getDraft(id)).samples as DraftSample[];
+    const samples = (await this.engine.getDraft(id)).samples as SampleInfo[];
     if (samples.length >= MAX_SAMPLES) throw new EngineError("INVALID_INPUT", `A draft can have ${MAX_SAMPLES} sample files; remove one first.`);
     const left = MAX_SAMPLE_CHARACTERS - samples.reduce((sum, entry) => sum + entry.characters, 0);
     throw new EngineError("INVALID_INPUT", `"${name}" has ${count(text.length)} characters, and the samples can have `
@@ -165,6 +166,13 @@ export class DraftService {
       if (record.revision !== options.expectedRevision) {
         throw new EngineError("STALE_REVISION", `Draft ${id} is at revision ${record.revision}, not ${options.expectedRevision}`);
       }
+      const samples = record.samples.length === 0 ? [] : await this.engine.getDraftSamples(id) as DraftSample[];
+      const context = options.chat.contextLength;
+      const needed = sampleTokens(samples.reduce((sum, sample) => sum + sample.characters, 0));
+      if (samples.length > 0 && context && needed + SAMPLE_CONTEXT_RESERVE > context) {
+        throw new EngineError("INVALID_INPUT", `The sample chats come to about ${count(needed)} tokens, and with the rest of the conversation `
+          + `that's more than ${options.chat.model} can take (${count(context)} tokens). Choose a model with a larger context, or remove a sample.`);
+      }
       options.onStart();
       const chat = record.chat as ChatEntry[];
       let revision = record.revision;
@@ -174,7 +182,7 @@ export class DraftService {
         history: chat,
         message: options.message,
         ...(options.step === undefined ? {} : { step: options.step }),
-        samples: record.samples as DraftSample[],
+        samples,
         signal: options.signal,
         ...(options.limits ? { limits: options.limits } : {}),
         onEvent: options.onEvent,
@@ -222,7 +230,7 @@ export class DraftService {
       ...record,
       draft,
       chat: record.chat as ChatEntry[],
-      samples: (record.samples as DraftSample[]).map(sampleInfo),
+      samples: (record.samples as SampleInfo[]).map(sampleInfo),
       problems: draftProblems(draft),
       busy: this.busy.has(record.id),
       suggestedWorldId: record.worldId ?? await freeWorldId(this.engine, slugify(draft.seed.name)),

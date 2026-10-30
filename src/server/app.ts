@@ -122,8 +122,8 @@ const MAX_BODY_BYTES = 512 * 1024;
 /** A world's whole history can be large; only an import may send this much. */
 const MAX_IMPORT_BYTES = 16 * 1024 * 1024;
 const MAX_FORM_BYTES = 64 * 1024;
-/** A sample chat file's characters can take up to four bytes each, and more escaped in JSON. */
-const MAX_SAMPLE_BYTES = 1024 * 1024;
+/** A sample chat file's characters take up to three bytes each, and up to six escaped in JSON. */
+const MAX_SAMPLE_BYTES = 8 * 1024 * 1024;
 const MODEL_CACHE_MS = 10 * 60_000;
 
 const CONTENT_TYPES: Record<string, string> = {

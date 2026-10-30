@@ -5,11 +5,19 @@
 // imports nothing.
 
 export const MAX_SAMPLES = 5;
-/** All of a draft's samples together: about 25,000 tokens, which a message may carry through every round. */
-export const MAX_SAMPLE_CHARACTERS = 100_000;
+/**
+ * All of a draft's samples together: about 270,000 tokens of chat, which a
+ * message carries through every model call once read, so only a model with a
+ * large context can read them all.
+ */
+export const MAX_SAMPLE_CHARACTERS = 800_000;
 /** The most one read of a sample returns. */
-export const SAMPLE_PART_CHARACTERS = 25_000;
+export const SAMPLE_PART_CHARACTERS = 100_000;
 export const MAX_SAMPLE_NAME_LENGTH = 200;
+/** Chats tokenize worse than prose, with their names, times, and emoji: about three characters a token. */
+const CHARACTERS_PER_TOKEN = 3;
+/** Room a message needs beside the samples: instructions, the draft, tool results, and the reply. */
+export const SAMPLE_CONTEXT_RESERVE = 60_000;
 
 export interface DraftSample {
   id: string;
@@ -21,14 +29,15 @@ export interface DraftSample {
   addedAt: string;
 }
 
-/** A sample as the browser and the AI creator's instructions see it: without its text. */
-export interface SampleInfo {
-  id: string;
+/** A sample as the browser sees it: without its text. */
+export type SampleInfo = Omit<DraftSample, "text">;
+
+/** A sample as the AI creator's instructions list it. */
+export interface SampleListing {
   name: string;
   characters: number;
   /** How many reads it takes to see all of it. */
   parts: number;
-  addedAt: string;
 }
 
 /** A chat file's text with its line breaks made plain and its ends trimmed. */
@@ -64,7 +73,16 @@ export function sampleParts(text: string): string[] {
   return parts;
 }
 
-export function sampleInfo(sample: DraftSample): SampleInfo {
+export function sampleInfo(sample: SampleInfo): SampleInfo {
   const { id, name, characters, addedAt } = sample;
-  return { id, name, characters, parts: sampleParts(sample.text).length, addedAt };
+  return { id, name, characters, addedAt };
+}
+
+export function sampleListing(sample: DraftSample): SampleListing {
+  return { name: sample.name, characters: sample.characters, parts: sampleParts(sample.text).length };
+}
+
+/** Roughly how many tokens samples of this many characters take. */
+export function sampleTokens(characters: number): number {
+  return Math.ceil(characters / CHARACTERS_PER_TOKEN);
 }

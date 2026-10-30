@@ -39,7 +39,7 @@ export interface DraftSummary {
 export interface DraftRecord extends DraftSummary {
   draft: unknown;
   chat: unknown[];
-  /** Sample chats for the AI creator, with their text. */
+  /** Sample chats for the AI creator, without their text, which only `getDraftSamples` reads. */
   samples: unknown[];
   createdAt: string;
 }
@@ -62,6 +62,11 @@ interface DraftRow {
   created_at: Date;
   updated_at: Date;
 }
+
+/** A draft row's columns, its samples without their text, which can be long and is read only for the AI creator. */
+const DRAFT_COLUMNS = `id, draft, chat, revision, world_id, published_at, created_at, updated_at,
+  (SELECT coalesce(jsonb_agg(sample - 'text' ORDER BY position), '[]'::jsonb)
+   FROM jsonb_array_elements(samples) WITH ORDINALITY AS listed(sample, position)) AS samples`;
 
 function draftRecord(row: DraftRow): DraftRecord {
   const name = row.draft?.seed?.name;
@@ -719,14 +724,14 @@ export class AdventureEngine {
 
   /** A draft as saved; the caller validates its contents. */
   async getDraft(id: string): Promise<DraftRecord> {
-    const result = await this.pool.query(`SELECT * FROM ${this.namespace}.world_drafts WHERE id = $1`, [id]);
+    const result = await this.pool.query(`SELECT ${DRAFT_COLUMNS} FROM ${this.namespace}.world_drafts WHERE id = $1`, [id]);
     if (result.rowCount === 0) throw new EngineError("NOT_FOUND", `Unknown draft: ${id}`);
     return draftRecord(result.rows[0]);
   }
 
   async createDraft(id: string, draft: unknown): Promise<DraftRecord> {
     const result = await this.pool.query(
-      `INSERT INTO ${this.namespace}.world_drafts (id, draft) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO NOTHING RETURNING *`,
+      `INSERT INTO ${this.namespace}.world_drafts (id, draft) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO NOTHING RETURNING ${DRAFT_COLUMNS}`,
       [id, JSON.stringify(draft)],
     );
     if (result.rowCount === 0) throw new EngineError("REQUEST_CONFLICT", `Draft ${id} already exists`);
@@ -748,7 +753,7 @@ export class AdventureEngine {
          published_at = CASE WHEN $6 THEN now() ELSE published_at END,
          updated_at = now()
        WHERE id = $1 AND revision = $2 AND published_at IS NULL
-       RETURNING *`,
+       RETURNING ${DRAFT_COLUMNS}`,
       [
         id, expectedRevision,
         changes.draft === undefined ? null : JSON.stringify(changes.draft),
@@ -773,13 +778,21 @@ export class AdventureEngine {
       `UPDATE ${this.namespace}.world_drafts SET samples = samples || jsonb_build_array($2::jsonb), updated_at = now()
        WHERE id = $1 AND published_at IS NULL AND jsonb_array_length(samples) < $3
          AND (SELECT coalesce(sum((s ->> 'characters')::integer), 0) FROM jsonb_array_elements(samples) s) + $4 <= $5
-       RETURNING *`,
+       RETURNING ${DRAFT_COLUMNS}`,
       [id, JSON.stringify(sample), limits.maxCount, sample.characters, limits.maxCharacters],
     );
     if (result.rowCount === 1) return draftRecord(result.rows[0]);
     const current = await this.getDraft(id);
     if (current.publishedAt !== null) throw new EngineError("REQUEST_CONFLICT", `Draft ${id} has become a world and can no longer change`);
     return null;
+  }
+
+  /** A draft's samples with their text, for the AI creator; the caller validates their shape. */
+  async getDraftSamples(id: string): Promise<unknown[]> {
+    const result = await this.pool.query(`SELECT samples FROM ${this.namespace}.world_drafts WHERE id = $1`, [id]);
+    if (result.rowCount === 0) throw new EngineError("NOT_FOUND", `Unknown draft: ${id}`);
+    const samples: unknown = result.rows[0].samples;
+    return Array.isArray(samples) ? samples : [];
   }
 
   /** Removes a sample from a draft, published or not, so a private chat can always be taken back. */
@@ -789,7 +802,7 @@ export class AdventureEngine {
          (SELECT jsonb_agg(s ORDER BY position) FROM jsonb_array_elements(samples) WITH ORDINALITY AS kept(s, position)
           WHERE s ->> 'id' <> $2), '[]'::jsonb)
        WHERE id = $1 AND EXISTS (SELECT 1 FROM jsonb_array_elements(samples) s WHERE s ->> 'id' = $2)
-       RETURNING *`,
+       RETURNING ${DRAFT_COLUMNS}`,
       [id, sampleId],
     );
     if (result.rowCount === 1) return draftRecord(result.rows[0]);

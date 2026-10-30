@@ -215,10 +215,14 @@ What you can do:
   text files of real or invented conversations, such as a group chat's export,
   for it to draw on: how these people talk, what they care about, how they get
   on, and the kind of situations they get into. A draft holds up to 5 files and
-  100,000 characters in all. Its instructions list the files, and it reads them
-  with `read_samples`, a part of up to 25,000 characters at a time, in any step
-  of a guided build. It bases characters on the people in them only if you ask,
-  and leaves out personal details such as phone numbers and addresses. The
+  800,000 characters in all, about 270,000 tokens. Its instructions list the
+  files, and it reads them with `read_samples`, a part of up to 100,000
+  characters at a time, in any step of a guided build. What it reads is resent
+  with each later model call in the same message, so before it starts, a model
+  whose context can't hold the samples and 60,000 tokens more is refused with
+  a reason. The default model takes about a million tokens. It bases
+  characters on the people in them only if you ask, and leaves out personal
+  details such as phone numbers and addresses. The
   files are kept beside the draft, not in it: they never reach the world, a
   download, or the browser again (it sees only their names and sizes), but
   they are sent to the creator's model when it reads them. Remove one with its
@@ -348,7 +352,7 @@ The server's HTTP API, under `/api`, is what the interface uses:
 | `GET /api/drafts`, `POST /api/drafts` | List drafts; create one, blank or from `{adventureId}`. |
 | `GET /api/drafts/:id`, `PUT /api/drafts/:id`, `DELETE /api/drafts/:id` | A draft with its problems and chat; replace it from `{draft, expectedRevision}`, refused with `STALE_REVISION` if it changed since. |
 | `POST /api/drafts/:id/publish` | Create the world from `{worldId, expectedRevision}`; a retry after a failure resumes. |
-| `POST /api/drafts/:id/samples`, `DELETE /api/drafts/:id/samples/:sample` | Add a sample chat for the AI creator from `{name, text}` (up to 5 files and 100,000 characters in all, not to a published draft), or remove one. The draft's view lists each sample's name, size, and parts, never its text. Refused with `DRAFT_BUSY` while the AI creator works. |
+| `POST /api/drafts/:id/samples`, `DELETE /api/drafts/:id/samples/:sample` | Add a sample chat for the AI creator from `{name, text}` (up to 5 files and 800,000 characters in all, not to a published draft), or remove one. The draft's view lists each sample's name and size, never its text. Refused with `DRAFT_BUSY` while the AI creator works. |
 | `GET /api/worlds/:id/export?kind=design\|save`, `GET /api/drafts/:id/export` | Download a world file: a design (the default), or a world's full save. |
 | `POST /api/import?worldId=ID` | Import a world file, sent as the body: a design becomes a draft, a save a world (under `worldId`, or the file's world ID made unique). |
 | `POST /api/drafts/:id/assistant` | Run the AI creator on `{message, model?, step?, expectedRevision}`, streamed as one JSON event per line. `step` (`story`, `places`, `characters`, `challenges`, or `endings`) runs that step of a guided build, with only its tools. Other writes to the draft get `DRAFT_BUSY` until it finishes. |
@@ -887,8 +891,10 @@ Integration coverage includes:
   listed in its instructions and read by part, without changing the draft;
   the browser sees only their names and sizes, and a design leaves them out;
   an empty file, one that isn't text, a sixth file, or too many characters is
-  refused with what is left; nothing changes them while the creator works; and
-  a published draft takes no more, but can still give one up.
+  refused with what is left; a model whose context can't hold them is refused
+  before it starts; nothing changes them while the creator works; and a
+  published draft takes no more, but can still give one up. A message whose
+  calls report their cost isn't stopped by the token count.
 - **Story editor:** a review can only read and propose, and a write is refused;
   a fix makes the approved changes, saving agent changes once a round and
   committing story changes as it goes; it streams its work, keeps a chat per

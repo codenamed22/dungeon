@@ -78,7 +78,9 @@ after each one for your approval.
 
 **Sample chats** give the AI creator real voices to work from. Under its
 message box, add text exports of conversations, such as a group chat, a
-Discord channel, or a script, up to 100,000 characters in all. Then ask, for
+Discord channel, or a script: up to 5 files and 800,000 characters in all,
+which is months of a busy group chat. The default model can read all of that;
+a model with a smaller context is refused with a message saying so. Then ask, for
 example *"Base the friends on my group chat"* or *"Use how these two argue
 for the couple"*. It takes how people talk, what they care about, and how they
 get on. It bases characters on the real people only if you ask, and leaves out
