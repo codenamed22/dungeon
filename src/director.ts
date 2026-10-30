@@ -19,7 +19,7 @@ import { openConfiguredEngine } from "./config.ts";
 import type { AdventureEngine, EngineOptions } from "./engine.ts";
 import { exportDesign, exportSave, importWorldFile, worldFileName } from "./exchange.ts";
 import type { Belief } from "./memory.ts";
-import { EngineError, rulesOf } from "./model.ts";
+import { EngineError, rulesOf, thresholdLevel } from "./model.ts";
 import type { AdventureEvent, WorldState } from "./model.ts";
 import { liveEvents } from "./wipes.ts";
 
@@ -278,7 +278,7 @@ async function show(engine: AdventureEngine, worldId: string): Promise<void> {
     const trigger = "threatId" in entry.when
       ? `when ${entry.when.threatId} fires`
       : "trackId" in entry.when
-        ? `when someone reaches ${entry.when.thresholdId} on ${entry.when.trackId}`
+        ? `when someone reaches ${thresholdLevel(state, entry.when.trackId, entry.when.thresholdId)} on ${entry.when.trackId}`
         : `when ${entry.when.challengeId} ${entry.when.outcome === "success" ? "succeeds" : "fails"}`;
     console.log(`  ${entry.name} (${entry.id}): ${trigger}`);
   }

@@ -10,6 +10,7 @@ import {
   MAX_NARRATION_LENGTH,
   MAX_SPEECH_LENGTH,
   rulesOf,
+  validateSeed,
   validateWorld,
   worldStateSchema,
 } from "./model.ts";
@@ -1003,7 +1004,7 @@ export function applyEvent(previous: WorldState | undefined, event: AdventureEve
     ) {
       corrupt("Invalid world creation event");
     }
-    validateWorld(data.seed);
+    validateSeed(data.seed);
     return worldStateSchema.parse({
       ...structuredClone(data.seed),
       revision: 1,
@@ -1384,10 +1385,13 @@ export class Replayer {
       const outcome = check?.data.type === "check_resolved" ? check.data : undefined;
       const challenge = this.state?.challenges.find((entry) => entry.id === data.challengeId);
       const listed = outcome && (outcome.success ? challenge?.onSuccess : challenge?.onFailure)?.adjustTracks;
-      if (
-        !outcome || check?.requestId !== event.requestId || outcome.challengeId !== data.challengeId
-        || !listed?.some((entry) => entry.trackId === data.trackId && entry.delta === data.delta && (entry.subjectId ?? outcome.actorId) === data.characterId)
-      ) {
+      // Each change the outcome lists happens at most once: a value already at its end skips one.
+      const allowed = listed?.filter((entry) => (
+        entry.trackId === data.trackId && entry.delta === data.delta && (entry.subjectId ?? outcome!.actorId) === data.characterId
+      )).length ?? 0;
+      const made = this.requestBefore(event).filter((other) => other.data.type === "track_changed" && other.data.trackId === data.trackId
+        && other.data.delta === data.delta && other.data.characterId === data.characterId).length;
+      if (!outcome || check?.requestId !== event.requestId || outcome.challengeId !== data.challengeId || made >= allowed) {
         corrupt("A track change must follow the check that caused it");
       }
     }

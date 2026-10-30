@@ -3,7 +3,8 @@ import { modelSetupSchema } from "../agents/models.ts";
 import { castProblems, castSchema, MAX_NARRATOR_STYLE_LENGTH, MAX_PREMISE_LENGTH, npcPersonaSchema, paceSchema, personaSchema } from "../agents/prompts.ts";
 import type { Cast } from "../agents/prompts.ts";
 import {
-  abilitySchema, BAND_DIFFICULTY, difficultyBandSchema, EngineError, MAX_ENDING_LENGTH, MAX_THREAT_LENGTH, parseInput, rulesOf, trackSchema, worldProblems,
+  abilitySchema, BAND_DIFFICULTY, difficultyBandSchema, EngineError, MAX_DISCOVERY_LENGTH, MAX_ENDING_LENGTH, MAX_THREAT_LENGTH, parseInput, rulesOf,
+  startProblems, thresholdLevel, trackSchema, worldProblems,
   worldSeedSchema,
 } from "../model.ts";
 import type { DifficultyBand, WorldRules, WorldSeed } from "../model.ts";
@@ -100,7 +101,7 @@ export function draftProblems(draft: Draft): DraftProblem[] {
       reported.add(`challenge:${challenge.id}`);
     }
   }
-  for (const problem of worldProblems(seed as WorldSeed)) {
+  for (const problem of [...worldProblems(seed as WorldSeed), ...startProblems(seed as WorldSeed)]) {
     const restates = /^(Invalid character state|Unknown challenge location)/.test(problem.message);
     if (restates && reported.has(`${problem.kind}:${problem.id}`)) continue;
     add("error", SECTION_BY_KIND[problem.kind], problem.message, problem.id);
@@ -131,10 +132,34 @@ export function draftProblems(draft: Draft): DraftProblem[] {
     }
   }
   const threats = new Map((seed.threats ?? []).map((threat) => [threat.id, threat]));
-  const setOff = new Set(seed.challenges.flatMap((challenge) => [...challenge.onSuccess?.armThreats ?? [], ...challenge.onFailure?.armThreats ?? []]));
+  const thresholds = (seed.tracks ?? []).flatMap((track) => track.thresholds);
+  const setOff = new Set([
+    ...seed.challenges.flatMap((challenge) => [...challenge.onSuccess?.armThreats ?? [], ...challenge.onFailure?.armThreats ?? []]),
+    ...thresholds.flatMap((threshold) => threshold.armThreats ?? []),
+  ]);
   for (const threat of threats.values()) {
     if (threat.status === "waiting" && !setOff.has(threat.id)) {
-      add("warning", "threats", `Nothing sets off "${threat.name}", so it never happens. Choose it under a challenge's outcome, or give it a time.`, threat.id);
+      add("warning", "threats", `Nothing sets off "${threat.name}", so it never happens. Choose it under a challenge's outcome or a track threshold, or give it a time.`, threat.id);
+    }
+  }
+  const unlocked = new Set(thresholds.flatMap((threshold) => threshold.unlockChallenges ?? []));
+  for (const challenge of seed.challenges.filter((entry) => entry.locked && !unlocked.has(entry.id))) {
+    add("warning", "challenges", `"${challenge.name}" is locked and no track threshold unlocks it, so nobody can ever attempt it.`, challenge.id);
+  }
+  for (const track of seed.tracks ?? []) {
+    const moved = seed.challenges.some((challenge) => [...challenge.onSuccess?.adjustTracks ?? [], ...challenge.onFailure?.adjustTracks ?? []]
+      .some((move) => move.trackId === track.id));
+    if (!seed.characters.some((character) => character.tracks?.[track.id] !== undefined)) {
+      add("warning", "tracks", `Nobody has "${track.name}", so it never moves. Give characters a starting value.`, track.id);
+    } else if (!moved) {
+      add("warning", "tracks", `No challenge moves "${track.name}". Choose it under a challenge's outcome.`, track.id);
+    }
+    const ends = new Set((seed.endings ?? []).flatMap(({ when }) => ("trackId" in when && when.trackId === track.id ? [when.thresholdId] : [])));
+    for (const threshold of track.thresholds) {
+      const { id, at, ...effects } = threshold;
+      if (Object.keys(effects).length === 0 && !ends.has(id)) {
+        add("warning", "tracks", `The threshold at ${at} on "${track.name}" does nothing. Give it guidance or an effect, or end the story there.`, track.id);
+      }
     }
   }
   for (const challenge of seed.challenges) {
@@ -195,7 +220,7 @@ export function slugify(name: string): string {
 /** IDs are unique across every kind of thing, since a belief can be about any of them. */
 function takenIds(seed: DraftSeed): Set<string> {
   return new Set([
-    ...seed.locations, ...seed.items, ...seed.characters, ...seed.challenges, ...seed.threats ?? [], ...seed.endings ?? [],
+    ...seed.locations, ...seed.items, ...seed.characters, ...seed.challenges, ...seed.threats ?? [], ...seed.endings ?? [], ...seed.tracks ?? [],
   ].map((entity) => entity.id));
 }
 
@@ -421,7 +446,7 @@ export const upsertChallengeInput = z.strictObject({
   requiresItemId: z.string().trim().max(64).optional().describe("ID of an item the attempt needs. An empty string removes the need."),
   opensRoutes: z.array(routeInput).max(10).optional().describe("Blocked ways that success opens, replacing any listed before"),
   grantsItemIds: z.array(ref).max(10).optional().describe("Items that success gives the one who succeeds"),
-  reveals: longText.optional().describe("A private discovery: something only the one who succeeds learns. An empty string removes it."),
+  reveals: z.string().trim().max(MAX_DISCOVERY_LENGTH).optional().describe("A private discovery: something only the one who succeeds learns. An empty string removes it."),
   armsThreatIds: z.array(ref).max(10).optional().describe("Waiting threats that success sets in motion"),
   disarmsThreatIds: z.array(ref).max(10).optional().describe("Threats that success stops"),
   failureBlocksRoutes: z.array(routeInput).max(10).optional().describe("Ways that a failed attempt blocks"),
@@ -476,7 +501,7 @@ const thresholdInput = z.strictObject({
   unlocksChallengeIds: z.array(ref).max(10).optional().describe("Locked challenges it makes available"),
   unlocksRoutes: z.array(routeInput).max(10).optional().describe("Blocked ways it opens"),
   locksRoutes: z.array(routeInput).max(10).optional().describe("Ways it blocks"),
-  reveals: longText.optional().describe("A private discovery that only that character learns"),
+  reveals: z.string().trim().max(MAX_DISCOVERY_LENGTH).optional().describe("A private discovery that only that character learns"),
   armsThreatIds: z.array(ref).max(10).optional().describe("Waiting threats it sets in motion"),
   disarmsThreatIds: z.array(ref).max(10).optional().describe("Threats it stops"),
   modifiers: z.array(z.strictObject({
@@ -682,7 +707,10 @@ export function upsertCharacter(draft: Draft, raw: z.infer<typeof upsertCharacte
     }
     if (inventory) character.inventory = inventory;
     if (input.trackValues) {
-      for (const trackId of Object.keys(input.trackValues)) requireTrack(seed, trackId);
+      for (const [trackId, value] of Object.entries(input.trackValues)) {
+        const track = requireTrack(seed, trackId);
+        if (value > track.max) fail(`"${track.name}" runs from 0 to ${track.max}, so ${character.name} can't start at ${value}.`);
+      }
       if (Object.keys(input.trackValues).length === 0) delete character.tracks;
       else character.tracks = input.trackValues;
     }
@@ -793,6 +821,10 @@ export function upsertChallenge(draft: Draft, raw: z.infer<typeof upsertChalleng
     if (input.failureAdjustsTracks) setOptional(failure, "adjustTracks", input.failureAdjustsTracks);
     setOptional(challenge, "onFailure", Object.keys(failure).length > 0 ? failure : null);
     if (input.locked !== undefined) setOptional(challenge, "locked", input.locked || null);
+    if (input.locked === false) {
+      const challengeId = challenge.id;
+      eachThreshold(seed, (threshold) => setOptional(threshold, "unlockChallenges", threshold.unlockChallenges?.filter((id) => id !== challengeId)));
+    }
     parseInput(challengeSchema, challenge);
     return `${created ? "Added" : "Updated"} challenge "${challenge.name}" (${challenge.id}) at ${nameOf(seed, challenge.locationId)}.`;
   });
@@ -891,7 +923,7 @@ export function upsertEnding(draft: Draft, raw: z.infer<typeof upsertEndingInput
     const trigger = "threatId" in ending.when
       ? `when "${nameOf(seed, ending.when.threatId)}" happens`
       : "trackId" in ending.when
-        ? `when someone reaches "${ending.when.thresholdId}" on "${nameOf(seed, ending.when.trackId)}"`
+        ? `when someone reaches ${thresholdLevel(seed, ending.when.trackId, ending.when.thresholdId)} on "${nameOf(seed, ending.when.trackId)}"`
         : `when "${nameOf(seed, ending.when.challengeId)}" ${ending.when.outcome === "success" ? "succeeds" : "fails"}`;
     return `${created ? "Added" : "Updated"} ending "${ending.name}" (${ending.id}), ${trigger}.`;
   });
@@ -937,6 +969,8 @@ export function upsertTrack(draft: Draft, raw: z.infer<typeof upsertTrackInput>)
         if (seed.endings.length === 0) delete seed.endings;
       }
     }
+    const twice = track.thresholds.find((threshold, index) => track!.thresholds.findIndex((other) => other.id === threshold.id) !== index);
+    if (twice) fail(`Two thresholds have the ID "${twice.id}"; give each its own level, or its own ID.`);
     const high = track.thresholds.find((threshold) => threshold.at > track.max);
     if (high) fail(`Threshold "${high.id}" is at ${high.at}, above the highest value, ${track.max}.`);
     const trackId = track.id;

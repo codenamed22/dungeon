@@ -6,7 +6,7 @@ import {
   upsertPlace, upsertThreat, upsertTrack,
 } from "../../../src/creator/operations.ts";
 import type { OperationResult, removeKinds } from "../../../src/creator/operations.ts";
-import { rulesOf } from "../../../src/model.ts";
+import { rulesOf, thresholdLevel } from "../../../src/model.ts";
 import type { Draft, DraftSection } from "../types.ts";
 import { Field, LiveText, Segmented, Stepper } from "../ui/controls.tsx";
 import { refusal } from "./useDraft.ts";
@@ -736,7 +736,7 @@ function ChallengeCard({ editor, draft, challenge, number, open, onToggle, onRem
           <ChipChoice options={seed.items.map((item) => ({ value: item.id, label: item.name }))} chosen={(success.grantItems ?? []).map((grant) => grant.itemId)}
             empty="No items to give." onChange={(next) => apply((current) => upsertChallenge(current, { id, grantsItemIds: next }))} />
         </Field>
-        <LiveText label="It reveals, only to whoever succeeds" multiline rows={2} maxLength={2000} value={success.reveals ?? ""}
+        <LiveText label="It reveals, only to whoever succeeds" multiline rows={2} maxLength={1000} value={success.reveals ?? ""}
           hint="A private discovery: the others learn it only if told." commit={(reveals) => apply((current) => upsertChallenge(current, { id, reveals }))} />
         <Field label="It sets off">
           <ChipChoice options={waiting.map((threat) => ({ value: threat.id, label: threat.name }))} chosen={success.armThreats ?? []}
@@ -839,8 +839,13 @@ function TrackCard({ editor, draft, track, number, open, onToggle, onRemove }: S
   const apply = (edit: Edit) => refusal(editor.apply(edit));
   const id = track.id;
   const unlockable = seed.challenges.filter((challenge) => challenge.locked);
-  const waiting = (seed.threats ?? []).filter((threat) => threat.status === "waiting");
-  const routes = allRoutes(seed).filter((route) => route.locked);
+  const threats = seed.threats ?? [];
+  const waiting = threats.filter((threat) => threat.status === "waiting");
+  const routes = allRoutes(seed);
+  /** A level no threshold has yet: above the highest, or else the lowest free one. */
+  const taken = new Set(track.thresholds.map((threshold) => threshold.at));
+  const freeLevel = [Math.max(0, ...taken) + 1, ...Array.from({ length: track.max }, (_, index) => index + 1)]
+    .find((level) => level <= track.max && !taken.has(level));
   const toInput = (threshold: (typeof track.thresholds)[number]) => ({
     id: threshold.id, at: threshold.at,
     ...(threshold.guidance ? { guidance: threshold.guidance } : {}),
@@ -906,7 +911,7 @@ function TrackCard({ editor, draft, track, number, open, onToggle, onRemove }: S
                 <Trash2 size={14} />Remove threshold
               </button>
             </div>
-            <LiveText label="Guidance for the narrator and referee" multiline rows={2} maxLength={600} value={threshold.guidance ?? ""}
+            <LiveText label="Guidance for the narrator and referee" multiline rows={2} maxLength={1000} value={threshold.guidance ?? ""}
               hint="Only they and you read it, e.g. “She no longer hides her interest.”"
               commit={(guidance) => apply((current) => upsertTrack(current, {
                 id, thresholds: track.thresholds.map((entry, at) => {
@@ -916,7 +921,7 @@ function TrackCard({ editor, draft, track, number, open, onToggle, onRemove }: S
                   return guidance ? { ...rest, guidance } : rest;
                 }),
               }))} />
-            <LiveText label="Reveals, only to that character" multiline rows={2} maxLength={2000} value={threshold.reveals ?? ""}
+            <LiveText label="Reveals, only to that character" multiline rows={2} maxLength={1000} value={threshold.reveals ?? ""}
               commit={(reveals) => apply((current) => upsertTrack(current, {
                 id, thresholds: track.thresholds.map((entry, at) => {
                   const next = toInput(entry);
@@ -930,20 +935,28 @@ function TrackCard({ editor, draft, track, number, open, onToggle, onRemove }: S
                 empty="No locked challenges. Lock one in Challenges." onChange={(next) => setThreshold(index, { unlocksChallengeIds: next })} />
             </Field>
             <Field label="It opens">
-              <ChipChoice options={routes.map((route) => ({ value: route.key, label: route.label }))} chosen={(threshold.unlockRoutes ?? []).map(key)}
+              <ChipChoice options={routes.filter((route) => route.locked || (threshold.unlockRoutes ?? []).map(key).includes(route.key))
+                .map((route) => ({ value: route.key, label: route.label }))} chosen={(threshold.unlockRoutes ?? []).map(key)}
                 empty="No blocked ways." onChange={(next) => setThreshold(index, { unlocksRoutes: parts(next) })} />
+            </Field>
+            <Field label="It blocks">
+              <ChipChoice options={routes.filter((route) => !route.locked || (threshold.lockRoutes ?? []).map(key).includes(route.key))
+                .map((route) => ({ value: route.key, label: route.label }))} chosen={(threshold.lockRoutes ?? []).map(key)}
+                empty="No open ways." onChange={(next) => setThreshold(index, { locksRoutes: parts(next) })} />
             </Field>
             <Field label="It sets off">
               <ChipChoice options={waiting.map((threat) => ({ value: threat.id, label: threat.name }))} chosen={threshold.armThreats ?? []}
                 empty="No waiting threats." onChange={(next) => setThreshold(index, { armsThreatIds: next })} />
             </Field>
+            <Field label="It stops">
+              <ChipChoice options={threats.map((threat) => ({ value: threat.id, label: threat.name }))} chosen={threshold.disarmThreats ?? []}
+                empty="No threats." onChange={(next) => setThreshold(index, { disarmsThreatIds: next })} />
+            </Field>
           </div>
         ))}
-        <button type="button" className="text-button"
-          onClick={() => {
-            const at = Math.min(track.max, Math.max(0, ...track.thresholds.map((threshold) => threshold.at)) + 1);
-            apply((current) => upsertTrack(current, { id, thresholds: [...track.thresholds.map(toInput), { at }] }));
-          }}>
+        <button type="button" className="text-button" disabled={freeLevel === undefined}
+          title={freeLevel === undefined ? "Every level has a threshold; raise the highest value first" : undefined}
+          onClick={() => apply((current) => upsertTrack(current, { id, thresholds: [...track.thresholds.map(toInput), { at: freeLevel! }] }))}>
           <Plus size={14} />Add a threshold
         </button>
       </div>
@@ -1078,7 +1091,7 @@ function ThreatCard({ editor, draft, threat, number, open, onToggle, onRemove }:
 /** "When X succeeds", "When Y happens": what an ending waits on, in words. */
 function triggerPhrase(seed: Seed, when: Ending["when"]): string {
   if ("threatId" in when) return `when "${nameIn(seed, when.threatId)}" happens`;
-  if ("trackId" in when) return `when "${when.thresholdId}" is reached on "${seed.tracks?.find((track) => track.id === when.trackId)?.name ?? when.trackId}"`;
+  if ("trackId" in when) return `when someone reaches ${thresholdLevel(seed, when.trackId, when.thresholdId)} on "${seed.tracks?.find((track) => track.id === when.trackId)?.name ?? when.trackId}"`;
   return `when "${nameIn(seed, when.challengeId)}" ${when.outcome === "success" ? "succeeds" : "fails"}`;
 }
 

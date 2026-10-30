@@ -193,7 +193,8 @@ const tools: readonly EditorTool[] = [
       };
     }),
   tool("read_world", "Read the world as it is now: places and the ways between them, where everyone is, health, what they carry, their goals, "
-    + "challenges with what they take, threats, endings, the time, and whether the story has ended.", noInput, false, async (context) => {
+    + "challenges with what they take, threats, hidden tracks and where everyone stands on them, endings, the time, and whether the story has ended.",
+  noInput, false, async (context) => {
     const state = await context.engine.getWorld(context.worldId);
     return { summary: "Read the world.", content: { note: UNTRUSTED, time: formatClock(state.elapsedSeconds), world: state } };
   }),

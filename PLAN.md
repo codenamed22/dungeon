@@ -503,6 +503,65 @@
     clock and characters went back, and Mira's view left the wiped lines out;
   - branched from a wiped line, and the branch had the bars open;
   - on a phone, used "Wipe from here" from the line menu.
+- **Hidden progression tracks: reviewed and fixed locally.** The user built
+  per-character hidden tracks (commit 38a0b2a): numbers that challenge outcomes
+  move, with thresholds that, once reached, open or block routes, unlock a
+  locked challenge, reveal a private `insight`, arm or disarm threats, change
+  modifiers, end the story, and guide the narrator and referee. The review
+  kept the design and fixed:
+  - **A threshold could happen on a fall.** A character starting at or past a
+    threshold set it off on their first change, even a drop. Seeds now start
+    below every threshold (`startProblems`, checked by `validateSeed` at world
+    creation and as a creator error), so a threshold always happens on the way
+    up.
+  - **Replay accepted a repeated track change.** A forged history could repeat
+    a check's track change; each listed change now happens at most once.
+  - **Creator:** a track's ID could collide with a place's or a character's;
+    two thresholds could share an ID; a starting value could pass the track's
+    end; unlocking a challenge by hand left thresholds pointing at it, which
+    then refused every edit of the track; and a threat only a threshold sets off
+    was reported as never happening. Reveals now share the discovery limit in
+    the creator, and the boxes match their limits.
+  - **Warnings:** a locked challenge nothing unlocks, a track nobody has or
+    nothing moves, and a threshold that does nothing.
+  - **Showing it:** endings and feed lines name a threshold by its level, not
+    its ID; the World panel lists each track, where everyone stands, and what
+    they reached, and tags locked challenges; the track card can block ways and
+    stop threats; a new threshold takes a free level.
+  - The dud test that claimed an ending but asserted none now checks that a
+    threshold happens once and that changes add up to the ending.
+
+  Verified 2026-10-30 on local PostgreSQL 16: typecheck, both builds, and all
+  248 tests pass; the two new engine tests fail against the original commit.
+  Headless Chrome at 1440 px and 390 px showed the Tracks tab with every
+  effect, the hidden lines in the feed, the World panel's tracks and ending,
+  Review without the false warning, and a new threshold at a free level, with
+  no console errors or sideways scrolling.
+- **A guide, and hidden lines out of the feed: done locally.**
+  - [GUIDE.md](./GUIDE.md) is a hands-on guide for building and running
+    stories. It covers how the three kinds of AI and the engine divide the
+    work, a first story, each Create section with advice, running, watching,
+    the director's tools from lightest to heaviest, the story editor, files,
+    recipes, and a troubleshooting table. The README links to it as the place
+    to start.
+  - The feed leaves out characters' notes and goals and hidden lines (threats
+    armed or disarmed, tracks moving, thresholds reached) until **Show hidden**
+    is ticked. It counts them, applies in a character's view too, and is
+    remembered in the browser.
+  - A turn whose last line is hidden offers its branch on its last shown line.
+    The branch still starts after the turn's last event, and the form says so.
+
+  Verified 2026-10-30 on local PostgreSQL 16: typecheck, both builds, and all
+  248 tests pass. Headless Chrome on the rehearsed Dry Aqueduct, and on a world
+  with a track and a turn ending in a note, checked these:
+  - the count and the missing lines;
+  - the branch on the shown line, which kept the turn to #12;
+  - the lines coming back, with the branch on the note;
+  - the choice surviving a reload;
+  - a character's view with and without the toggle;
+  - the bar on one row at 390 px.
+
+  There were no console errors and no sideways scrolling.
 - Development and tests use local PostgreSQL or a Neon development branch, not the
   `production` branch.
 

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Download } from "lucide-react";
 import { bandOf } from "../../../src/creator/operations.ts";
-import { rulesOf } from "../../../src/model.ts";
+import { rulesOf, thresholdLevel } from "../../../src/model.ts";
 import { api, errorText } from "../api.ts";
 import { clock, nameOf } from "../format.ts";
 import type { WorldView } from "../types.ts";
@@ -13,6 +13,8 @@ export function WorldPanel({ view }: { view: WorldView }) {
   const here = (locationId: string) => state.characters.filter((character) => character.locationId === locationId && !character.away);
   const away = state.characters.filter((character) => character.away);
   const endings = state.endings ?? [];
+  const tracks = state.tracks ?? [];
+  const trackName = (trackId: string) => tracks.find((track) => track.id === trackId)?.name ?? trackId;
   const pace = view.setup.cast.pace === "conversation" ? "conversation pace" : "action pace";
   return (
     <div className="stack">
@@ -55,6 +57,7 @@ export function WorldPanel({ view }: { view: WorldView }) {
           <div className="row">
             <strong>{challenge.name}</strong>
             {challenge.resolved && <span className="tag">resolved</span>}
+            {challenge.locked && <span className="tag">locked</span>}
             <span className="muted grow right">{nameOf(state, challenge.locationId)}</span>
           </div>
           {challenge.description && <div>{challenge.description}</div>}
@@ -90,6 +93,34 @@ export function WorldPanel({ view }: { view: WorldView }) {
           </div>
         </div>
       ))}
+      {tracks.length > 0 && (
+        <>
+          <h3>Hidden tracks</h3>
+          {tracks.map((track) => (
+            <div key={track.id} className="sheet small">
+              <div className="row">
+                <strong>{track.name}</strong>
+                <span className="muted grow right">0 to {track.max}</span>
+              </div>
+              {track.description && <div>{track.description}</div>}
+              <ul className="plain">
+                {state.characters.filter((character) => character.tracks?.[track.id] !== undefined).map((character) => {
+                  const passed = track.thresholds.filter((threshold) => state.reached?.includes(`${character.id}:${track.id}:${threshold.id}`));
+                  return (
+                    <li key={character.id}>
+                      {character.name}: {character.tracks![track.id]}
+                      {passed.length > 0 && <span className="muted">, reached {passed.map((threshold) => threshold.at).join(", ")}</span>}
+                    </li>
+                  );
+                })}
+              </ul>
+              {track.thresholds.length > 0 && (
+                <div className="muted">Thresholds at {[...track.thresholds].sort((a, b) => a.at - b.at).map((threshold) => threshold.at).join(", ")}</div>
+              )}
+            </div>
+          ))}
+        </>
+      )}
       {endings.length > 0 && (
         <>
           <h3>Endings</h3>
@@ -102,7 +133,7 @@ export function WorldPanel({ view }: { view: WorldView }) {
                   {"threatId" in ending.when
                     ? `when ${nameOf(state, ending.when.threatId)} happens`
                     : "trackId" in ending.when
-                      ? `when ${ending.when.thresholdId} is reached on ${nameOf(state, ending.when.trackId)}`
+                      ? `when someone reaches ${thresholdLevel(state, ending.when.trackId, ending.when.thresholdId)} on ${trackName(ending.when.trackId)}`
                       : `when ${nameOf(state, ending.when.challengeId)} ${ending.when.outcome === "success" ? "succeeds" : "fails"}`}
                 </span>
               </div>

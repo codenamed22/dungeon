@@ -200,7 +200,9 @@ export function describeEvent(event: AdventureEvent, state: WorldState, viewerId
     }
     case "threshold_reached": {
       const track = state.tracks?.find((entry) => entry.id === data.trackId);
-      return `${stamp} (hidden) ${nameIn(state.characters, data.characterId)} reached "${data.thresholdId}" on ${track?.name ?? data.trackId}.`;
+      const at = track?.thresholds.find((entry) => entry.id === data.thresholdId)?.at;
+      const level = at === undefined ? `"${data.thresholdId}"` : `${at}/${track!.max}`;
+      return `${stamp} (hidden) ${nameIn(state.characters, data.characterId)} reached ${level} on ${track?.name ?? data.trackId}.`;
     }
     case "insight":
       return `${stamp} ${subject(data.actorId)} came to understand, alone: ${data.text}`;

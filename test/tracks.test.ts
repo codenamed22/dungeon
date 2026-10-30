@@ -65,13 +65,32 @@ test("a check moves a track, and reaching a threshold changes the world once", (
   assert.ok(perceive(state, "mira").challenges.some((challenge) => challenge.id === "confide"));
 });
 
-test("a threshold reached by an ending ends the story", () => {
+test("a threshold happens once, and changes add up to the one that ends the story", () => {
   const session = new Session(world());
-  session.commit({ action: { type: "attempt_check", challengeId: "talk" } });
-  // The first check resolved "talk"; a failure on another attempt still pushes the track, so use confide.
-  const committed = session.commit({ action: { type: "attempt_check", challengeId: "confide" } }, fixed(1));
-  assert.equal(committed.at(-1)?.event.data.type, "check_resolved");
-  assert.equal(session.state.endedWith, undefined);
+  const fail = () => session.commit({ action: { type: "attempt_check", challengeId: "talk" } }, fixed(1)).map(({ event }) => event.data.type);
+  assert.deepEqual(fail(), ["check_resolved", "track_changed"]);
+  assert.deepEqual(fail(), ["check_resolved", "track_changed", "threshold_reached", "insight"], "1 + 1 reaches the threshold at 2");
+  assert.deepEqual(fail(), ["check_resolved", "track_changed"], "passing 2 again does nothing");
+  assert.deepEqual(fail(), ["check_resolved", "track_changed", "threshold_reached", "story_ended"]);
+  assert.deepEqual(session.state.reached, ["mira:trust:warm", "mira:trust:bound"]);
+  assert.equal(session.state.endedWith, "bound-end");
+});
+
+test("a character starts below every threshold, so one never happens on a fall", () => {
+  const seed = world();
+  seed.characters[0]!.tracks = { trust: 2 };
+  assert.throws(() => new Session(seed), (error) => errorCode("INVALID_INPUT")(error)
+    && /Mira starts at 2 on Trust, at or past its threshold at 2/.test((error as Error).message));
+  seed.characters[0]!.tracks = { trust: 1 };
+  assert.ok(new Session(seed));
+});
+
+test("replay refuses a track change the outcome made only once", () => {
+  const session = new Session(world());
+  const [check, changed] = session.commit({ action: { type: "attempt_check", challengeId: "talk" } }, fixed(1)).map(({ event }) => event);
+  assert.equal(changed?.data.type, "track_changed");
+  const again = { ...changed!.data, value: 2 } as typeof changed.data;
+  assert.throws(() => session.replayer.apply(nextEvent(session.state, again, { source: "engine", requestId: check!.requestId })), errorCode("CORRUPT_STORAGE"));
 });
 
 test("failure can move a track too, and values stay within their bounds", () => {
@@ -158,4 +177,42 @@ test("the creator builds, edits and removes tracks, keeping every reference cons
   assert.equal(without.seed.challenges[0]?.onSuccess, undefined);
   assert.equal(without.seed.endings, undefined);
   assert.deepEqual(draftProblems(without).filter((problem) => problem.severity === "error"), []);
+});
+
+test("the creator keeps tracks consistent: IDs, levels, starting values, unlocking, and warnings", async () => {
+  const { blankDraft, draftProblems, setWorld, upsertChallenge, upsertCharacter, upsertPlace, upsertThreat, upsertTrack } = await import("../src/creator/operations.ts");
+  type Draft = ReturnType<typeof blankDraft>;
+  const build = (draft: Draft, ...steps: ((draft: Draft) => { draft: Draft })[]) => steps.reduce((current, step) => step(current).draft, draft);
+  const warnings = (draft: Draft) => draftProblems(draft).filter((problem) => problem.severity === "warning").map((problem) => problem.message);
+  const draft = build(
+    blankDraft(),
+    (d) => setWorld(d, { name: "Tracked", premise: "A test." }),
+    (d) => upsertPlace(d, { name: "Hall" }),
+    (d) => upsertTrack(d, { name: "Hall", max: 5 }),
+    (d) => upsertCharacter(d, { name: "Mira", placeId: "hall" }),
+    (d) => upsertChallenge(d, { name: "Confide", placeId: "hall", minutes: 1, locked: true }),
+    (d) => upsertThreat(d, { name: "Bell", text: "A bell rings.", afterMinutes: 5 }),
+  );
+  const track = draft.seed.tracks![0]!;
+  assert.notEqual(track.id, "hall", "a track's ID is unique among everything else's");
+  const id = track.id;
+  assert.ok(warnings(draft).some((message) => /"Confide" is locked and no track threshold unlocks it/.test(message)));
+  assert.ok(warnings(draft).some((message) => /Nobody has "Hall"/.test(message)));
+  assert.throws(() => upsertCharacter(draft, { id: "mira", trackValues: { [id]: 6 } }), /runs from 0 to 5, so Mira can't start at 6/);
+  assert.throws(() => upsertTrack(draft, { id, thresholds: [{ at: 2 }, { at: 2 }] }), /Two thresholds have the ID "level-2"/);
+
+  const ready = build(draft,
+    (d) => upsertCharacter(d, { id: "mira", trackValues: { [id]: 3 } }),
+    (d) => upsertTrack(d, { id, thresholds: [{ at: 2, unlocksChallengeIds: ["confide"], armsThreatIds: ["bell"] }, { at: 4 }] }));
+  const messages = draftProblems(ready).map((problem) => problem.message);
+  assert.ok(messages.some((message) => /Mira starts at 3 on Hall, at or past its threshold at 2/.test(message)), "starting past a threshold is an error");
+  assert.ok(!messages.some((message) => /Nothing sets off "Bell"/.test(message)), "a threshold sets it off");
+  assert.ok(!messages.some((message) => /"Confide" is locked/.test(message)));
+  assert.ok(messages.some((message) => /No challenge moves "Hall"/.test(message)));
+  assert.ok(messages.some((message) => /The threshold at 4 on "Hall" does nothing/.test(message)));
+
+  // Unlocking the challenge by hand leaves no threshold pointing at it, so the track stays editable.
+  const opened = upsertChallenge(ready, { id: "confide", locked: false }).draft;
+  assert.equal(opened.seed.tracks![0]!.thresholds[0]!.unlockChallenges, undefined);
+  assert.ok(upsertTrack(opened, { id, name: "Trust" }).draft);
 });

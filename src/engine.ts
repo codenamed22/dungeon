@@ -10,6 +10,7 @@ import {
   parseInput,
   parseStored,
   readableIssues,
+  validateSeed,
   validateWorld,
   worldSeedSchema,
   worldStateSchema,
@@ -207,7 +208,7 @@ export class AdventureEngine {
 
   async createWorld(input: unknown): Promise<WorldState> {
     const seed = parseInput(worldSeedSchema, input);
-    validateWorld(seed);
+    validateSeed(seed);
     const event: AdventureEvent = {
       v: EVENT_FORMAT,
       worldId: seed.id,

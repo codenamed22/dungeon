@@ -92,7 +92,7 @@ export function WorldPage({ worldId }: { worldId: string }) {
       {live.error && <p className="error" style={{ padding: "8px 16px" }}>{live.error}</p>}
       <div className="world-body">
         <section className="feed-column">
-          <div className="feed-toolbar">
+          <Feed worldId={worldId} view={view} events={events} viewer={viewer} toolbar={(
             <label className="inline">
               Show
               <select value={viewer ?? ""} onChange={(event) => setViewer(event.target.value || null)}>
@@ -102,8 +102,7 @@ export function WorldPage({ worldId }: { worldId: string }) {
                 ))}
               </select>
             </label>
-          </div>
-          <Feed worldId={worldId} view={view} events={events} viewer={viewer} />
+          )} />
           {ending ? (
             <div className="ended-banner" role="status">
               <span className="eyebrow">The story ended · {ending.name}</span>

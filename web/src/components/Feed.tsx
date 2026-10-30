@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { FormEvent } from "react";
+import type { FormEvent, ReactNode } from "react";
 import { Eraser, GitBranch, Pencil, Trash2 } from "lucide-react";
 import { survivesWipe, wipedBy } from "../../../src/wipes.ts";
 import { api, errorText } from "../api.ts";
@@ -7,10 +7,12 @@ import { nameOf, unstamped } from "../format.ts";
 import { navigate, worldPath } from "../router.ts";
 import type { EventView, WorldView } from "../types.ts";
 import { SheetDialog } from "../ui/Dialog.tsx";
-import { NARROW, useMedia } from "../ui/hooks.ts";
+import { NARROW, useMedia, useStored } from "../ui/hooks.ts";
 
 const PRIVATE = new Set(["discovery", "insight", "belief_noted", "goal_set"]);
 const HIDDEN = new Set(["threat_armed", "threat_disarmed", "track_changed", "threshold_reached"]);
+/** Lines left out unless "Show hidden" is on: characters' notes and goals, and what the engine does out of sight. */
+const BACKSTAGE = new Set(["belief_noted", "goal_set", ...HIDDEN]);
 /** The most words each kind of line may have, matching the engine's limits. */
 const LINE_LIMITS: Record<string, number> = { narration: 1000, utterance: 700, introduced: 2000 };
 
@@ -46,17 +48,21 @@ interface WipePlan {
  * The story as it happens. The director's view shows everything, marking
  * what was private, hidden, out of the story, edited, deleted, or wiped; a
  * character's view shows only what that character perceived, as its agent
- * remembers it, with the director's edits.
+ * remembers it, with the director's edits. Either leaves out notes, goals,
+ * and hidden lines until "Show hidden" is on.
  */
-export function Feed({ worldId, view, events, viewer }: {
+export function Feed({ worldId, view, events, viewer, toolbar }: {
   worldId: string;
   view: WorldView;
   events: EventView[];
   viewer: string | null;
+  /** Controls shown before "Show hidden" in the bar above the lines. */
+  toolbar: ReactNode;
 }) {
   const end = useRef<HTMLDivElement>(null);
   const narrow = useMedia(NARROW);
   const [follow, setFollow] = useState(true);
+  const [backstage, setBackstage] = useStored<"show" | "hide">("dungeons.feedHidden", "hide");
   /** The line whose actions are open, and which one; null on a phone's menu before one is chosen. */
   const [open, setOpen] = useState<{ sequence: number; mode: Mode | null } | null>(null);
 
@@ -73,9 +79,17 @@ export function Feed({ worldId, view, events, viewer }: {
     }
     return found;
   }, [events, wiped]);
-  // A branch may start after any event that ends its request, and a wipe at the first event of one.
-  const turnEnds = useMemo(() => new Set(events.filter((event, index) => events[index + 1]?.requestId !== event.requestId)
-    .map((event) => event.sequence)), [events]);
+  // A branch may start after the last event of a turn, and a wipe at the first event of one.
+  const turnEnds = useMemo(() => {
+    const ends = new Map<number, number>();
+    let last = 0;
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index]!;
+      if (events[index + 1]?.requestId !== event.requestId) last = event.sequence;
+      ends.set(event.sequence, last);
+    }
+    return ends;
+  }, [events]);
   const wipeStarts = useMemo(() => {
     const ranges = events.flatMap((event) => (event.data.type === "wiped" ? [{ from: event.data.fromSequence, at: event.sequence }] : []));
     const starts = new Map<number, number | null>();
@@ -105,52 +119,71 @@ export function Feed({ worldId, view, events, viewer }: {
     last: events.at(-1)!.sequence,
     count: events.filter((event) => event.sequence >= from && !wiped.has(event.sequence) && !survivesWipe(event.data, from)).length,
   });
-  const shown = viewer === null
+  const perceived = viewer === null
     ? events
     : events.filter((event) => event.perceivers.includes(viewer) && changes.get(event.sequence)?.deletedBy === undefined && !wiped.has(event.sequence));
+  const hidden = perceived.filter((event) => BACKSTAGE.has(event.type)).length;
+  const shown = backstage === "show" ? perceived : perceived.filter((event) => !BACKSTAGE.has(event.type));
+  // A turn's last shown line offers its branch, which still starts after the turn's last event, shown or not.
+  const branchAt = new Map<number, number>();
+  if (viewer === null) {
+    shown.forEach((event, index) => {
+      const end = turnEnds.get(event.sequence)!;
+      if (end > 1 && turnEnds.get(shown[index + 1]?.sequence ?? 0) !== end) branchAt.set(event.sequence, end);
+    });
+  }
 
   useEffect(() => {
     if (follow) end.current?.scrollIntoView({ block: "end" });
   }, [shown.length, follow]);
 
   return (
-    <div className="feed" onScroll={(event) => {
-      const box = event.currentTarget;
-      setFollow(box.scrollHeight - box.scrollTop - box.clientHeight < 80);
-    }}>
-      {shown.length === 0 && <p className="muted">Nothing yet.</p>}
-      {shown.map((event) => {
-        const change = changes.get(event.sequence);
-        const wipedAt = wiped.get(event.sequence);
-        const live = viewer === null && change?.deletedBy === undefined && wipedAt === undefined;
-        const wipeFrom = viewer === null && wipedAt === undefined ? wipeStarts.get(event.sequence) ?? null : null;
-        const isOpen = open?.sequence === event.sequence;
-        return (
-          <EventItem
-            key={event.sequence}
-            event={event}
-            view={view}
-            viewer={viewer}
-            change={change}
-            wipedBy={wipedAt}
-            canEdit={live && event.type in LINE_LIMITS}
-            canDelete={live && deletable(event, latestGoalChanges.has(event.sequence))}
-            wipe={wipeFrom === null ? null : isOpen ? wipePlan(wipeFrom) : { from: wipeFrom, last: 0, count: 0 }}
-            canBranch={viewer === null && event.type !== "world_created" && turnEnds.has(event.sequence)}
-            mode={isOpen ? open.mode : undefined}
-            onOpen={(mode) => setOpen({ sequence: event.sequence, mode })}
-            onClose={() => setOpen(null)}
-            worldId={worldId}
-            narrow={narrow}
-          />
-        );
-      })}
-      <div ref={end} />
-    </div>
+    <>
+      <div className="feed-toolbar">
+        {toolbar}
+        <label className="inline feed-hidden" title="Characters' notes and goals, and what the engine does out of sight: threats set in motion or stopped, and hidden tracks moving">
+          <input type="checkbox" checked={backstage === "show"} onChange={(change) => setBackstage(change.target.checked ? "show" : "hide")} />
+          Show hidden{hidden > 0 && ` (${hidden})`}
+        </label>
+      </div>
+      <div className="feed" onScroll={(event) => {
+        const box = event.currentTarget;
+        setFollow(box.scrollHeight - box.scrollTop - box.clientHeight < 80);
+      }}>
+        {shown.length === 0 && <p className="muted">{hidden > 0 ? "Only hidden lines so far." : "Nothing yet."}</p>}
+        {shown.map((event) => {
+          const change = changes.get(event.sequence);
+          const wipedAt = wiped.get(event.sequence);
+          const live = viewer === null && change?.deletedBy === undefined && wipedAt === undefined;
+          const wipeFrom = viewer === null && wipedAt === undefined ? wipeStarts.get(event.sequence) ?? null : null;
+          const isOpen = open?.sequence === event.sequence;
+          return (
+            <EventItem
+              key={event.sequence}
+              event={event}
+              view={view}
+              viewer={viewer}
+              change={change}
+              wipedBy={wipedAt}
+              canEdit={live && event.type in LINE_LIMITS}
+              canDelete={live && deletable(event, latestGoalChanges.has(event.sequence))}
+              wipe={wipeFrom === null ? null : isOpen ? wipePlan(wipeFrom) : { from: wipeFrom, last: 0, count: 0 }}
+              branchAt={branchAt.get(event.sequence) ?? null}
+              mode={isOpen ? open.mode : undefined}
+              onOpen={(mode) => setOpen({ sequence: event.sequence, mode })}
+              onClose={() => setOpen(null)}
+              worldId={worldId}
+              narrow={narrow}
+            />
+          );
+        })}
+        <div ref={end} />
+      </div>
+    </>
   );
 }
 
-function EventItem({ event, view, viewer, change, wipedBy, canEdit, canDelete, wipe, canBranch, mode, onOpen, onClose, worldId, narrow }: {
+function EventItem({ event, view, viewer, change, wipedBy, canEdit, canDelete, wipe, branchAt, mode, onOpen, onClose, worldId, narrow }: {
   event: EventView;
   view: WorldView;
   viewer: string | null;
@@ -161,7 +194,8 @@ function EventItem({ event, view, viewer, change, wipedBy, canEdit, canDelete, w
   canDelete: boolean;
   /** Where wiping from this line starts, the first line of its turn; null if it can't. Counted only while its actions are open. */
   wipe: WipePlan | null;
-  canBranch: boolean;
+  /** The last event of this line's turn, which a branch from it keeps; null if it offers no branch. */
+  branchAt: number | null;
   /** Undefined while closed; null for the phone's menu. */
   mode: Mode | null | undefined;
   onOpen(mode: Mode | null): void;
@@ -212,10 +246,10 @@ function EventItem({ event, view, viewer, change, wipedBy, canEdit, canDelete, w
     const line = unstamped(event.line);
     body = <div>{text !== null && words !== text ? line.replace(text, words!) : line}</div>;
   }
-  const actions = canEdit || canDelete || wipe !== null || canBranch;
+  const actions = canEdit || canDelete || wipe !== null || branchAt !== null;
   const panel = mode !== undefined && (
     <EventActions worldId={worldId} view={view} event={event} words={words ?? ""} mode={mode}
-      canEdit={canEdit} canDelete={canDelete} wipe={wipe} canBranch={canBranch} onMode={onOpen} done={onClose} />
+      canEdit={canEdit} canDelete={canDelete} wipe={wipe} branchAt={branchAt} onMode={onOpen} done={onClose} />
   );
 
   return (
@@ -246,7 +280,7 @@ function EventItem({ event, view, viewer, change, wipedBy, canEdit, canDelete, w
               <button type="button" className={`icon-button ${mode === "wipe" ? "active" : ""}`} aria-label={`Wipe from #${event.sequence}`}
                 title="Wipe from here: take the story back to before this turn" onClick={() => (mode === "wipe" ? onClose() : onOpen("wipe"))}><Eraser size={14} /></button>
             )}
-            {canBranch && (
+            {branchAt !== null && (
               <button type="button" className={`icon-button ${mode === "branch" ? "active" : ""}`} aria-label={`Branch at #${event.sequence}`}
                 title="Branch a new world from here" onClick={() => (mode === "branch" ? onClose() : onOpen("branch"))}><GitBranch size={14} /></button>
             )}
@@ -263,7 +297,7 @@ function EventItem({ event, view, viewer, change, wipedBy, canEdit, canDelete, w
   );
 }
 
-function EventActions({ worldId, view, event, words, mode, canEdit, canDelete, wipe, canBranch, onMode, done }: {
+function EventActions({ worldId, view, event, words, mode, canEdit, canDelete, wipe, branchAt, onMode, done }: {
   worldId: string;
   view: WorldView;
   event: EventView;
@@ -273,14 +307,15 @@ function EventActions({ worldId, view, event, words, mode, canEdit, canDelete, w
   canEdit: boolean;
   canDelete: boolean;
   wipe: WipePlan | null;
-  canBranch: boolean;
+  branchAt: number | null;
   onMode(mode: Mode): void;
   done(): void;
 }) {
   const [text, setText] = useState(words);
   const [note, setNote] = useState("");
-  const [branchId, setBranchId] = useState(`${worldId}-at-${event.sequence}`);
-  const [branchName, setBranchName] = useState(`${view.world.name} (from #${event.sequence})`);
+  const at = branchAt ?? event.sequence;
+  const [branchId, setBranchId] = useState(`${worldId}-at-${at}`);
+  const [branchName, setBranchName] = useState(`${view.world.name} (from #${at})`);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const thought = thoughtDeletion(view, event);
@@ -304,7 +339,7 @@ function EventActions({ worldId, view, event, words, mode, canEdit, canDelete, w
     setBusy(true);
     setError(null);
     try {
-      const created = await api.branch(worldId, event.sequence, branchId.trim(), branchName.trim());
+      const created = await api.branch(worldId, at, branchId.trim(), branchName.trim());
       navigate(worldPath(created.world.id));
     } catch (problem) {
       setError(errorText(problem));
@@ -319,7 +354,7 @@ function EventActions({ worldId, view, event, words, mode, canEdit, canDelete, w
           {canEdit && <button type="button" onClick={() => onMode("edit")}><Pencil size={15} />Edit</button>}
           {canDelete && <button type="button" onClick={() => onMode("delete")}><Trash2 size={15} />Delete</button>}
           {wipe !== null && <button type="button" onClick={() => onMode("wipe")}><Eraser size={15} />Wipe from here</button>}
-          {canBranch && <button type="button" onClick={() => onMode("branch")}><GitBranch size={15} />Branch</button>}
+          {branchAt !== null && <button type="button" onClick={() => onMode("branch")}><GitBranch size={15} />Branch</button>}
         </div>
       )}
       {mode === "edit" && (
@@ -371,7 +406,9 @@ function EventActions({ worldId, view, event, words, mode, canEdit, canDelete, w
       )}
       {mode === "branch" && (
         <form onSubmit={(submit) => void branch(submit)} className="stack">
-          <span className="small">Branch: a new world with this history up to #{event.sequence}. This world stays as it is.</span>
+          <span className="small">
+            Branch: a new world with this history up to #{at}.{at > event.sequence && ` This turn ends at #${at}, on a hidden line.`} This world stays as it is.
+          </span>
           <div className="row wrap">
             <input value={branchId} onChange={(change) => setBranchId(change.target.value)} aria-label="New world ID" />
             <input value={branchName} onChange={(change) => setBranchName(change.target.value)} aria-label="New world name" className="grow" />

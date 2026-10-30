@@ -52,7 +52,8 @@ function draftStatus(draft: Draft): string {
   const errors = problems.filter((problem) => problem.severity === "error").length;
   if (seed.locations.length + seed.characters.length + seed.items.length === 0 && !draft.cast.premise) return "The draft is empty.";
   return `The draft has ${count(seed.locations.length, "place")}, ${count(seed.characters.length, "character")}, `
-    + `${count(seed.items.length, "item")}, ${count(seed.challenges.length, "challenge")}, and ${count(seed.threats?.length ?? 0, "threat")}; `
+    + `${count(seed.items.length, "item")}, ${count(seed.challenges.length, "challenge")}, ${count(seed.threats?.length ?? 0, "threat")}, `
+    + `and ${count(seed.tracks?.length ?? 0, "hidden track")}; `
     + `${count(errors, "error")} and ${count(problems.length - errors, "warning")}. Call get_draft to read it.`;
 }
 

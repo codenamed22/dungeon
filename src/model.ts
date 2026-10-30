@@ -288,7 +288,7 @@ export const worldStateSchema = worldSeedSchema.extend({
   /** The ending the story reached; after it, nothing more happens. */
   endedWith: id.optional(),
   /** Thresholds already reached, as `characterId:trackId:thresholdId`; each happens once. */
-  reached: z.array(z.string()).optional(),
+  reached: z.array(z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}(:[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}){2}$/)).optional(),
 });
 export type WorldSeed = z.infer<typeof worldSeedSchema>;
 export type WorldState = z.infer<typeof worldStateSchema>;
@@ -892,5 +892,41 @@ export function worldProblems(world: WorldSeed): WorldProblem[] {
 
 export function validateWorld(world: WorldSeed): void {
   const [first] = worldProblems(world);
+  if (first) throw new EngineError("INVALID_INPUT", first.message);
+}
+
+/**
+ * What only a world's starting point can get wrong, beyond worldProblems: a
+ * character starting at or past a threshold, which would then happen on their
+ * first change, even a fall. Play keeps it so, since reaching a threshold is
+ * what passes it.
+ */
+export function startProblems(world: WorldSeed): WorldProblem[] {
+  const problems: WorldProblem[] = [];
+  for (const character of world.characters) {
+    for (const track of world.tracks ?? []) {
+      const value = character.tracks?.[track.id];
+      const passed = value === undefined ? undefined : track.thresholds.find((threshold) => value >= threshold.at);
+      if (passed) {
+        problems.push({
+          kind: "character", id: character.id,
+          message: `${character.name} starts at ${value} on ${track.name}, at or past its threshold at ${passed.at}; start them below every threshold`,
+        });
+      }
+    }
+  }
+  return problems;
+}
+
+/** A threshold as people know it, by its level, or by its ID if the track no longer has it. */
+export function thresholdLevel(world: Pick<WorldSeed, "tracks">, trackId: string, thresholdId: string): string {
+  const at = world.tracks?.find((track) => track.id === trackId)?.thresholds.find((threshold) => threshold.id === thresholdId)?.at;
+  return at === undefined ? `"${thresholdId}"` : String(at);
+}
+
+/** A world about to be created: valid, and starting where its thresholds can still be reached. */
+export function validateSeed(world: WorldSeed): void {
+  validateWorld(world);
+  const [first] = startProblems(world);
   if (first) throw new EngineError("INVALID_INPUT", first.message);
 }

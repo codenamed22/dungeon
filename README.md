@@ -20,6 +20,11 @@ its own stats and health (or none), its pace, and optional endings. A friendship
 story, an incident on call, and a country-house mystery are bundled alongside
 the dungeon. See [the full plan](./PLAN.md).
 
+**To build and run stories, start with [the guide](./GUIDE.md):** designing a
+world section by section, running and watching it, the director's tools from
+steering to wiping, recipes, and what to do when a story goes wrong. This README
+is the reference: setup, the API, the CLI, and how the engine works.
+
 ## Requirements
 
 - Node.js 24 or newer.
@@ -175,8 +180,10 @@ What you can do:
   the referee reads, the stat it leans on, what success opens, gives, reveals
   privately, sets off, or stops, and what failure blocks or sets off),
   **Threats** (at a set time, or after a challenge sets them off, in some places
-  or everywhere), and **Endings** (closing text, set off by a challenge's
-  success or failure or by a threat) complete it. Drafts save as you type. **Review** lists
+  or everywhere), **Tracks** (hidden numbers per character, such as trust or
+  suspicion, that challenges move, with thresholds that change the world), and
+  **Endings** (closing text, set off by a challenge's success or failure, by a
+  threat, or by a track's threshold) complete it. Drafts save as you type. **Review** lists
   what stops the world being played, and what would improve it, each with a link
   to where you fix it (such as a threat that nothing sets off, or an item a
   challenge gives that no challenge needs); then **Create world** makes it playable. A draft that
@@ -237,8 +244,11 @@ What you can do:
   ending, or branch from an earlier event, to play on.
 - **Watch.** Committed events appear as they happen: speech, narration, checks,
   threats, and the director's own events, each marked with who perceived it and
-  whether it was private, hidden, or out of the story. Switch the feed to one
-  character to see only what they perceived. The side panel shows character
+  whether it was private, hidden, or out of the story. Characters' notes and
+  goals, and hidden lines, stay out of the feed until you tick **Show hidden**,
+  which counts them; a turn whose last line is hidden offers its branch on its
+  last shown line. Switch the feed to one character to see only what they
+  perceived. The side panel shows character
   sheets, the true state of the world, exactly what each agent is sent, each
   character's memory with search, the session report, and every model call with
   its prompt and reply.
@@ -567,6 +577,19 @@ events, because what they write reaches everyone present.
   fires. In the starter adventure, a botched pull at the rubble brings the
   ceiling down five minutes later unless someone clears the rubble properly
   first.
+- *Hidden tracks.* A world may define `tracks`: a number per character, from 0
+  to the track's `max`, such as trust or suspicion. Characters take part by
+  having a starting value (`tracks` on the character), below every threshold.
+  A challenge's outcome moves them (`onSuccess.adjustTracks`,
+  `onFailure.adjustTracks`): the actor, or a named `subjectId`, kept within
+  0 and `max`. The first time a character's value reaches a threshold, it
+  happens once: it can open or block routes, unlock a challenge that starts
+  `locked` (unseen and unattempted until then), reveal a fact to that
+  character alone (an `insight`), arm or disarm threats, change the
+  character's modifiers, end the story, and give the narrator and referee
+  `guidance` from then on. The narrator and referee see where those present
+  stand, and are told never to say it; characters never see a track.
+  `track_changed` and `threshold_reached` are hidden events nobody perceives.
 - *NPC agendas.* An NPC persona may have an `agenda`: aims to pursue and an
   interval in minutes. Once that much in-world time has passed since its last
   turn and a main character is there to hear, it speaks up unprompted, pursuing
@@ -579,8 +602,9 @@ events, because what they write reaches everyone present.
   waiting included, resets the count; notes, goals, and NPC turns do not.
 
 Replay checks all of it: a history in which a threat fires early, late, out of
-order, or with the wrong damage, a wait or a journey runs past a threat, or a
-consequence lacks the check that caused it, is rejected as corrupt.
+order, or with the wrong damage, a wait or a journey runs past a threat, a
+consequence lacks the check that caused it, or a track moves more than its
+check says or reaches a threshold out of turn, is rejected as corrupt.
 
 Every model call is traced: role, task (character turn, NPC turn, ruling, or
 narration), model, prompt version, the context sent, the raw reply, outcome,
@@ -676,8 +700,8 @@ prompt. It also hears what the character says in the same turn as the
 attempt, and weighs those words with the approach. Replay checks the dice arithmetic in dice worlds, and a reason without
 dice in judgment worlds.
 
-A world's optional `endings` each wait on a challenge's success or failure, or
-on a threat. When one is met, the engine appends `story_ended` after the
+A world's optional `endings` each wait on a challenge's success or failure, on
+a threat, or on anyone reaching a track's threshold. When one is met, the engine appends `story_ended` after the
 outcome, perceived by everyone conscious. A threat that came due while the
 action took its time fires before that ending, since it happened first, and
 its own ending wins if it has one. From then on only narration, retcons, and
@@ -744,8 +768,8 @@ npm test
 Pure tests always run: rules, rulings, NPC commands, perception, upcasting, the
 agent protocol, speaker selection, metrics, memory (discoveries, belief sources,
 supersession, goals, recall ranking), world progression (threat timing and
-interruption, consequences, replay forgery, steering, agendas, the stall
-ladder), director events (introduced events and their routes, retcons and their
+interruption, consequences, hidden tracks and their thresholds, replay
+forgery, steering, agendas, the stall ladder), director events (introduced events and their routes, retcons and their
 replay), the OpenRouter adapter against a simulated API, prompt canaries (the
 premise reaches every system prompt; a hidden fact never reaches the main
 characters; a challenge's criteria reach only the referee; non-fantasy worlds
